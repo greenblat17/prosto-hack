@@ -99,7 +99,7 @@ public class PivotService {
 
         if (useDuckDB) {
             jdbc = duckDBCacheService.getDuckDBJdbc();
-            tableName = "\"" + duckDBCacheService.cacheTableName(connId, schema, table) + "\"";
+            tableName = duckDBCacheService.cacheTableName(connId, schema, table);
             dialect = SqlDialect.DUCKDB;
             log.info("Pivot from DuckDB cache: {}.{}", schema, table);
         } else {

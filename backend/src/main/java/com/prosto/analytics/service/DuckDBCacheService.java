@@ -1,5 +1,6 @@
 package com.prosto.analytics.service;
 
+import com.prosto.analytics.dto.TableFieldDto;
 import org.duckdb.DuckDBConnection;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -8,12 +9,16 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
+import org.apache.commons.csv.CSVFormat;
+import org.apache.commons.csv.CSVRecord;
+import org.postgresql.copy.CopyManager;
+import org.postgresql.core.BaseConnection;
+
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
-import java.io.File;
-import java.sql.DriverManager;
-import java.sql.SQLException;
-import java.sql.Statement;
+import java.io.*;
+import java.nio.charset.StandardCharsets;
+import java.sql.*;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -25,6 +30,7 @@ import java.util.concurrent.locks.ReentrantLock;
 public class DuckDBCacheService {
 
     private static final Logger log = LoggerFactory.getLogger(DuckDBCacheService.class);
+    private static final int FETCH_SIZE = 50_000;
 
     private record CacheEntry(
             String connectionId, String schema, String tableName,
@@ -44,11 +50,8 @@ public class DuckDBCacheService {
     private final ConcurrentHashMap<String, CacheEntry> cacheMetadata = new ConcurrentHashMap<>();
     private final ConcurrentHashMap<String, CompletableFuture<Void>> inFlightLoads = new ConcurrentHashMap<>();
 
-    // DuckDB allows only one concurrent writer per database file.
-    // All DDL operations (CREATE TABLE, DROP TABLE, ATTACH, DETACH) must be serialized.
     private final ReentrantLock writeLock = new ReentrantLock();
 
-    // Dedicated executor for background cache loading (bounded to avoid ForkJoinPool starvation)
     private final ExecutorService cacheExecutor = Executors.newFixedThreadPool(2,
             r -> { var t = new Thread(r, "duckdb-cache"); t.setDaemon(true); return t; });
 
@@ -56,26 +59,17 @@ public class DuckDBCacheService {
     public void init() {
         try {
             masterConnection = openConnection();
-            installPostgresExtension();
             log.info("DuckDB cache initialized: {}", duckdbPath);
         } catch (Exception e) {
-            log.warn("DuckDB cache file corrupt or unreadable, recreating: {}", e.getMessage());
+            log.warn("DuckDB cache file corrupt, recreating: {}", e.getMessage());
             new File(duckdbPath).delete();
             try {
                 masterConnection = openConnection();
-                installPostgresExtension();
                 log.info("DuckDB cache recreated: {}", duckdbPath);
             } catch (Exception ex) {
                 log.error("Failed to initialize DuckDB cache: {}", ex.getMessage(), ex);
                 throw new RuntimeException("DuckDB initialization failed", ex);
             }
-        }
-    }
-
-    private void installPostgresExtension() throws SQLException {
-        try (Statement stmt = masterConnection.createStatement()) {
-            stmt.execute("INSTALL postgres");
-            stmt.execute("LOAD postgres");
         }
     }
 
@@ -123,17 +117,10 @@ public class DuckDBCacheService {
         return inFlightLoads.containsKey(cacheKey(connectionId, schema, tableName));
     }
 
-    /**
-     * Get a JdbcTemplate for DuckDB reads. Each getConnection() call returns a
-     * duplicate connection (thread-safe for concurrent reads).
-     */
     public JdbcTemplate getDuckDBJdbc() {
         return new JdbcTemplate(new DuckDBDataSource(masterConnection));
     }
 
-    /**
-     * Start async background caching. If already cached or loading, returns immediately.
-     */
     public CompletableFuture<Void> cacheTableAsync(String connectionId, String schema,
                                                     String tableName,
                                                     ConnectionService connectionService,
@@ -151,7 +138,7 @@ public class DuckDBCacheService {
                 ).whenComplete((v, ex) -> {
                     inFlightLoads.remove(key);
                     if (ex != null) {
-                        log.error("Cache failed for {}.{}: {}", schema, tableName, ex.getMessage());
+                        log.error("Cache failed for {}.{}: {}", schema, tableName, ex.getMessage(), ex);
                     }
                 })
         );
@@ -163,56 +150,88 @@ public class DuckDBCacheService {
         String duckTable = cacheTableName(connectionId, schema, tableName);
 
         try {
-            ConnectionService.ConnectionInfo info = connectionService.getConnectionInfo(connectionId, userEmail);
-            String attachUrl = String.format("postgresql://%s:%s@%s:%d/%s",
-                    info.username(), info.password(), info.host(), info.port(), info.database());
+            // 1. Get column metadata from external DB
+            List<TableFieldDto> fields = connectionService.getTableFields(connectionId, schema, tableName, userEmail);
+            if (fields.isEmpty()) {
+                log.warn("No fields found for {}.{}, skipping cache", schema, tableName);
+                return;
+            }
 
-            String attachName = "src_" + duckTable;
-
-            // Determine sort columns before acquiring write lock (read-only operation on external DB)
-            String sortClause = determineSortClause(connectionService, connectionId, schema, tableName, userEmail);
-
-            // All DDL must be serialized — DuckDB allows only one concurrent writer
+            // 2. Create table in DuckDB
+            String createSql = buildCreateTableSql(duckTable, fields);
             writeLock.lock();
-            try (var conn = masterConnection.duplicate();
-                 Statement stmt = conn.createStatement()) {
-
-                stmt.execute("ATTACH '" + attachUrl + "' AS " + ident(attachName) + " (TYPE postgres, READ_ONLY)");
-
-                try {
-                    String createSql = "CREATE OR REPLACE TABLE " + ident(duckTable) + " AS SELECT * FROM "
-                            + ident(attachName) + "." + ident(schema) + "." + ident(tableName);
-                    if (!sortClause.isEmpty()) {
-                        createSql += " ORDER BY " + sortClause;
-                    }
-                    stmt.execute(createSql);
-
-                    long rowCount;
-                    try (var rs = stmt.executeQuery("SELECT COUNT(*) FROM " + ident(duckTable))) {
-                        rowCount = rs.next() ? rs.getLong(1) : 0;
-                    }
-
-                    String key = cacheKey(connectionId, schema, tableName);
-                    cacheMetadata.put(key, new CacheEntry(
-                            connectionId, schema, tableName, duckTable,
-                            rowCount, System.currentTimeMillis()));
-
-                    long duration = System.currentTimeMillis() - startTime;
-                    log.info("Cached {}.{}: {} rows in {}ms (table: {})",
-                            schema, tableName, rowCount, duration, duckTable);
-
-                    evictIfOverLimit();
-
-                } finally {
-                    try {
-                        stmt.execute("DETACH " + ident(attachName));
-                    } catch (Exception e) {
-                        log.warn("Failed to detach {}: {}", attachName, e.getMessage());
-                    }
-                }
+            try (var duckConn = masterConnection.duplicate();
+                 Statement stmt = duckConn.createStatement()) {
+                stmt.execute("DROP TABLE IF EXISTS " + ident(duckTable));
+                stmt.execute(createSql);
             } finally {
                 writeLock.unlock();
             }
+
+            // 3. Read from PostgreSQL via COPY TO STDOUT, write to DuckDB via Appender
+            JdbcTemplate extJdbc = connectionService.getJdbc(connectionId, userEmail);
+            String copySql = "COPY " + ident(schema) + "." + ident(tableName)
+                    + " TO STDOUT WITH (FORMAT CSV, HEADER false, NULL '')";
+
+            long rowCount = 0;
+
+            Connection pgConn = extJdbc.getDataSource().getConnection();
+            try {
+                BaseConnection basePgConn = pgConn.unwrap(BaseConnection.class);
+                CopyManager copyManager = new CopyManager(basePgConn);
+
+                // Pipe: PG COPY writes to OutputStream, we read from InputStream
+                var pis = new PipedInputStream(1024 * 1024);
+                var pos = new PipedOutputStream(pis);
+
+                Thread copyThread = Thread.startVirtualThread(() -> {
+                    try {
+                        copyManager.copyOut(copySql, pos);
+                        pos.close();
+                    } catch (Exception e) {
+                        try { pos.close(); } catch (Exception ignored) {}
+                        log.error("COPY OUT failed: {}", e.getMessage());
+                    }
+                });
+
+                try (var reader = new BufferedReader(new InputStreamReader(pis, StandardCharsets.UTF_8));
+                     var csvParser = CSVFormat.DEFAULT.builder().build().parse(reader);
+                     var duckConn = (DuckDBConnection) masterConnection.duplicate();
+                     var appender = duckConn.createAppender(DuckDBConnection.DEFAULT_SCHEMA, duckTable)) {
+
+                    for (CSVRecord record : csvParser) {
+                        appender.beginRow();
+                        for (int i = 0; i < fields.size(); i++) {
+                            String val = record.get(i);
+                            appendTypedValue(appender, val, fields.get(i).type());
+                        }
+                        appender.endRow();
+                        rowCount++;
+
+                        if (rowCount % 500_000 == 0) {
+                            log.info("Caching {}.{}: {} rows...", schema, tableName, rowCount);
+                        }
+                    }
+                    appender.flush();
+                }
+
+                copyThread.join();
+            } finally {
+                try { pgConn.close(); } catch (Exception ignored) {}
+            }
+
+            // 4. Store metadata
+            String key = cacheKey(connectionId, schema, tableName);
+            cacheMetadata.put(key, new CacheEntry(
+                    connectionId, schema, tableName, duckTable,
+                    rowCount, System.currentTimeMillis()));
+
+            long duration = System.currentTimeMillis() - startTime;
+            log.info("Cached {}.{}: {} rows in {}ms (table: {})",
+                    schema, tableName, rowCount, duration, duckTable);
+
+            evictIfOverLimit();
+
         } catch (Exception e) {
             // Cleanup partial table on failure
             writeLock.lock();
@@ -228,21 +247,52 @@ public class DuckDBCacheService {
         }
     }
 
-    private String determineSortClause(ConnectionService connectionService, String connectionId,
-                                        String schema, String tableName, String userEmail) {
-        try {
-            var fields = connectionService.getTableFields(connectionId, schema, tableName, userEmail);
-            List<String> textColumns = fields.stream()
-                    .filter(f -> f.type().contains("character") || f.type().equals("text")
-                            || f.type().contains("varchar"))
-                    .map(f -> ident(f.name()))
-                    .limit(3)
-                    .toList();
-            return String.join(", ", textColumns);
-        } catch (Exception e) {
-            log.warn("Could not determine sort columns for {}.{}: {}", schema, tableName, e.getMessage());
-            return "";
+    private String buildCreateTableSql(String duckTable, List<TableFieldDto> fields) {
+        var sb = new StringBuilder("CREATE TABLE " + ident(duckTable) + " (");
+        for (int i = 0; i < fields.size(); i++) {
+            if (i > 0) sb.append(", ");
+            sb.append(ident(fields.get(i).name())).append(" ").append(mapPgType(fields.get(i).type()));
         }
+        sb.append(")");
+        return sb.toString();
+    }
+
+    private void appendTypedValue(org.duckdb.DuckDBAppender appender, String val, String pgType)
+            throws SQLException {
+        if (val == null || val.isEmpty()) {
+            appender.append((String) null);
+            return;
+        }
+        try {
+            switch (mapPgType(pgType)) {
+                case "INTEGER" -> appender.append(Integer.parseInt(val));
+                case "BIGINT" -> appender.append(Long.parseLong(val));
+                case "SMALLINT" -> appender.append(Integer.parseInt(val));
+                case "DOUBLE", "FLOAT" -> appender.append(Double.parseDouble(val));
+                case "BOOLEAN" -> appender.append(Boolean.parseBoolean(val));
+                default -> appender.append(val);
+            }
+        } catch (NumberFormatException e) {
+            appender.append(val);
+        }
+    }
+
+    private String mapPgType(String pgType) {
+        if (pgType == null) return "VARCHAR";
+        return switch (pgType.toLowerCase()) {
+            case "integer", "int4", "int", "serial" -> "INTEGER";
+            case "bigint", "int8", "bigserial" -> "BIGINT";
+            case "smallint", "int2" -> "SMALLINT";
+            case "numeric", "decimal" -> "DOUBLE";
+            case "real", "float4" -> "FLOAT";
+            case "double precision", "float8" -> "DOUBLE";
+            case "boolean", "bool" -> "BOOLEAN";
+            case "date" -> "DATE";
+            default -> {
+                if (pgType.toLowerCase().startsWith("timestamp")) yield "TIMESTAMP";
+                yield "VARCHAR";
+            }
+        };
     }
 
     public void evictTable(String connectionId, String schema, String tableName) {
@@ -293,8 +343,6 @@ public class DuckDBCacheService {
     }
 
     private void evictIfOverLimit() {
-        // Called while writeLock is held — getDatabaseSizeBytes acquires its own lock,
-        // but ReentrantLock is reentrant so this is safe.
         long maxBytes = maxDiskGb * 1024L * 1024L * 1024L;
         long currentSize = getDatabaseSizeBytes();
 
@@ -309,7 +357,6 @@ public class DuckDBCacheService {
                     currentSize / 1024 / 1024, maxBytes / 1024 / 1024,
                     oldest.schema(), oldest.tableName());
 
-            // evictTable acquires writeLock — reentrant, so safe
             evictTable(oldest.connectionId(), oldest.schema(), oldest.tableName());
             currentSize = getDatabaseSizeBytes();
         }
