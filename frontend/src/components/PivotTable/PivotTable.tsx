@@ -4,11 +4,13 @@ import { useStore } from '@/stores/RootStore'
 import { cn } from '@/lib/utils'
 import { ArrowUp, ArrowDown, ArrowUpDown, BarChart3, Type, Hash, Calendar } from 'lucide-react'
 
-function formatNumber(n: number): string {
-  if (n == null || isNaN(n)) return '—'
+function formatValue(v: number | string): string {
+  if (v == null) return '—'
+  if (typeof v === 'string') return v || '—'
+  if (isNaN(v)) return '—'
   return new Intl.NumberFormat('ru-RU', {
     maximumFractionDigits: 2,
-  }).format(n)
+  }).format(v)
 }
 
 type SortDir = 'asc' | 'desc' | null
@@ -66,7 +68,7 @@ export const PivotTable = observer(function PivotTable() {
       let max = -Infinity
       for (const row of data.rows) {
         const v = row.values[col]
-        if (!Number.isFinite(v)) continue
+        if (typeof v !== 'number' || !Number.isFinite(v)) continue
         if (v < min) min = v
         if (v > max) max = v
       }
@@ -108,7 +110,11 @@ export const PivotTable = observer(function PivotTable() {
       } else {
         const aVal = a.values[sortCol] ?? 0
         const bVal = b.values[sortCol] ?? 0
-        cmp = aVal - bVal
+        if (typeof aVal === 'string' || typeof bVal === 'string') {
+          cmp = String(aVal).localeCompare(String(bVal), 'ru')
+        } else {
+          cmp = (aVal as number) - (bVal as number)
+        }
       }
       return sortDir === 'desc' ? -cmp : cmp
     })
@@ -244,10 +250,10 @@ export const PivotTable = observer(function PivotTable() {
               </tr>
             </thead>
             <tbody>
-              {sortedRows.map((row: { keys: string[]; values: Record<string, number> }, rowIdx: number) => {
+              {sortedRows.map((row: { keys: string[]; values: Record<string, number | string> }, rowIdx: number) => {
                 const tooltipParts = [
                   ...row.keys.map((k: string, i: number) => `${rowFieldNames[i]}: ${k}`),
-                  ...valueColumns.map(col => `${col}: ${formatNumber(row.values[col])}`),
+                  ...valueColumns.map(col => `${col}: ${formatValue(row.values[col])}`),
                 ]
                 const tooltip = tooltipParts.join('\n')
                 return (
@@ -270,24 +276,30 @@ export const PivotTable = observer(function PivotTable() {
                     ))}
                     {valueColumns.map((col, colIdx) => {
                       const value = row.values[col]
-                      const width = barWidth(col, value)
+                      const isText = typeof value === 'string'
+                      const width = isText ? 0 : barWidth(col, value as number)
                       return (
                         <td
                           key={`v-${colIdx}`}
-                          className="py-2.5 px-4 text-right font-mono tabular-nums text-[#475569] relative overflow-hidden"
+                          className={cn(
+                            "py-2.5 px-4 text-[#475569] relative overflow-hidden",
+                            isText ? "text-left max-w-[300px]" : "text-right font-mono tabular-nums"
+                          )}
                         >
-                          <div
-                            className="absolute inset-y-0 right-0 bg-[#99f6e4] opacity-60 transition-all"
-                            style={{ width: `${width}%` }}
-                          />
-                          <span className="relative z-10">{formatNumber(value)}</span>
+                          {!isText && (
+                            <div
+                              className="absolute inset-y-0 right-0 bg-[#99f6e4] opacity-60 transition-all"
+                              style={{ width: `${width}%` }}
+                            />
+                          )}
+                          <span className={cn("relative z-10", isText && "truncate block")}>{formatValue(value)}</span>
                         </td>
                       )
                     })}
                   </tr>
                 )
               })}
-              {!pivotStore.values.every((v: any) => v.aggregation === 'raw') && (
+              {data.totals && Object.keys(data.totals).length > 0 && (
                 <tr className="font-semibold border-t-2 border-[#cbd5e1] bg-[#f8fafc]">
                   <td
                     colSpan={rowFieldNames.length}
@@ -295,14 +307,21 @@ export const PivotTable = observer(function PivotTable() {
                   >
                     Итого
                   </td>
-                  {valueColumns.map((col, i) => (
-                    <td
-                      key={`t-${i}`}
-                      className="py-3 px-4 text-right font-mono tabular-nums text-[#0f172a]"
-                    >
-                      {formatNumber(data.totals[col] ?? 0)}
-                    </td>
-                  ))}
+                  {valueColumns.map((col, i) => {
+                    const val = data.totals[col]
+                    const isText = typeof val === 'string'
+                    return (
+                      <td
+                        key={`t-${i}`}
+                        className={cn(
+                          "py-3 px-4 text-[#0f172a]",
+                          isText ? "text-left" : "text-right font-mono tabular-nums"
+                        )}
+                      >
+                        {formatValue(val ?? (isText ? '' : 0))}
+                      </td>
+                    )
+                  })}
                 </tr>
               )}
             </tbody>

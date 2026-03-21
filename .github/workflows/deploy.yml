@@ -3,6 +3,8 @@ name: Deploy to VPS
 on:
   push:
     branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
   workflow_dispatch:
     inputs:
       branch:
@@ -25,7 +27,7 @@ jobs:
 
             PROJECT_ROOT="/opt/prosto-analytics"
             REPO_URL="https://github.com/${{ github.repository }}.git"
-            BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
+            BRANCH="${{ github.event.inputs.branch || github.head_ref || github.ref_name }}"
 
             if [ ! -d "$PROJECT_ROOT" ]; then
               echo ">>> Creating project root"
@@ -38,7 +40,7 @@ jobs:
             else
               echo ">>> Deploying branch: $BRANCH"
               cd "$PROJECT_ROOT"
-              git fetch origin
+              git fetch --force origin
               git checkout "$BRANCH"
               git reset --hard "origin/$BRANCH"
             fi
@@ -46,7 +48,11 @@ jobs:
             cd "$PROJECT_ROOT/infra"
 
             echo ">>> Writing .env..."
-            echo "AI_API_KEY=${{ secrets.AI_API_KEY }}" > .env
+            cat > .env <<EOF
+            AI_API_KEY=${{ secrets.AI_API_KEY }}
+            CORS_ORIGINS=http://localhost:5173,http://localhost:3000,http://147.45.233.15:3000
+            EOF
+            sed -i 's/^[[:space:]]*//' .env
 
             echo ">>> Stopping old containers..."
             docker compose down --remove-orphans
