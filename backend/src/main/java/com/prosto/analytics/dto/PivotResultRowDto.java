@@ -5,7 +5,7 @@ import java.util.Map;
 
 public record PivotResultRowDto(
         List<String> keys,
-        Map<String, Double> values,
+        Map<String, Object> values,
         List<PivotResultRowDto> children
 ) {
 }

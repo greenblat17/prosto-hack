@@ -45,8 +45,8 @@ public class ExportService {
                 line.add(escapeCsv(key));
             }
             for (String col : valueColumns) {
-                Double val = row.values().get(col);
-                line.add(val != null ? String.valueOf(val) : "");
+                Object val = row.values().get(col);
+                line.add(val != null ? escapeCsv(String.valueOf(val)) : "");
             }
             writer.println(String.join(";", line));
         }
@@ -58,8 +58,8 @@ public class ExportService {
                 totalsLine.add("");
             }
             for (String col : valueColumns) {
-                Double val = result.totals().get(col);
-                totalsLine.add(val != null ? String.valueOf(val) : "");
+                Object val = result.totals().get(col);
+                totalsLine.add(val != null ? escapeCsv(String.valueOf(val)) : "");
             }
             writer.println(String.join(";", totalsLine));
         }
@@ -104,11 +104,13 @@ public class ExportService {
                     excelRow.createCell(col++).setCellValue(key);
                 }
                 for (String valCol : valueColumns) {
-                    Double val = row.values().get(valCol);
+                    Object val = row.values().get(valCol);
                     Cell cell = excelRow.createCell(col++);
-                    if (val != null) {
-                        cell.setCellValue(val);
+                    if (val instanceof Number n) {
+                        cell.setCellValue(n.doubleValue());
                         cell.setCellStyle(numberStyle);
+                    } else if (val != null) {
+                        cell.setCellValue(val.toString());
                     }
                 }
             }
@@ -121,10 +123,12 @@ public class ExportService {
 
                 col = keyCount;
                 for (String valCol : valueColumns) {
-                    Double val = result.totals().get(valCol);
+                    Object val = result.totals().get(valCol);
                     Cell cell = totalsRow.createCell(col++);
-                    if (val != null) {
-                        cell.setCellValue(val);
+                    if (val instanceof Number n) {
+                        cell.setCellValue(n.doubleValue());
+                    } else if (val != null) {
+                        cell.setCellValue(val.toString());
                     }
                     cell.setCellStyle(totalsStyle);
                 }

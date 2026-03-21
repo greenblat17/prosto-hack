@@ -46,15 +46,14 @@ public class PivotService {
 
         PivotConfigDto config = request.config();
 
-        // Reject RAW aggregation for non-numeric fields
         Map<String, FieldType> columnTypes = columns.stream()
                 .collect(Collectors.toMap(DatasetColumn::getColumnName, DatasetColumn::getFieldType));
         for (var vf : config.values()) {
-            if (vf.aggregation() == AggregationType.RAW) {
+            if (vf.aggregation().requiresNumericColumn()) {
                 FieldType ft = columnTypes.get(vf.fieldId());
                 if (ft != null && ft != FieldType.NUMBER) {
                     throw new IllegalArgumentException(
-                            "RAW aggregation is only allowed for numeric fields; use COUNT for field '" + vf.name() + "'");
+                            "Агрегация «" + vf.aggregation().getDisplayLabel() + "» требует числовое поле; используйте «Количество» для «" + vf.name() + "»");
                 }
             }
         }
@@ -112,6 +111,13 @@ public class PivotService {
                                            List<Map<String, Object>> totalsRaw,
                                            PivotConfigDto config,
                                            long totalRows, int offset, int limit) {
+        boolean allOriginal = config.values().stream()
+                .allMatch(v -> v.aggregation() == AggregationType.ORIGINAL);
+
+        if (allOriginal) {
+            return transformOriginalResult(rawRows, config, totalRows, offset, limit);
+        }
+
         List<String> rowFieldIds = config.rows().stream().map(PivotFieldDto::fieldId).toList();
         List<String> colFieldIds = config.columns().stream().map(PivotFieldDto::fieldId).toList();
 
@@ -137,13 +143,13 @@ public class PivotService {
                     ? List.of("Итого")
                     : List.of(entry.getKey().split("\\|\\|\\|", -1));
 
-            Map<String, Double> values = buildValueMap(entry.getValue(), colKeys, colFieldIds, config.values());
+            Map<String, Object> values = buildValueMap(entry.getValue(), colKeys, colFieldIds, config.values());
             resultRows.add(new PivotResultRowDto(keys, values, null));
         }
 
         resultRows.sort(Comparator.comparing(r -> r.keys().isEmpty() ? "" : r.keys().getFirst()));
 
-        Map<String, Double> totals = buildTotalsMap(totalsRaw, colFieldIds, config.values());
+        Map<String, Object> totals = buildTotalsMap(totalsRaw, colFieldIds, config.values());
 
         List<List<String>> columnHeaders = colKeys.stream()
                 .map(k -> k.isEmpty() ? List.<String>of() : List.of(k.split(" / ", -1)))
@@ -152,39 +158,48 @@ public class PivotService {
         return new PivotResultDto(columnHeaders, resultRows, totals, totalRows, offset, limit);
     }
 
-    private Map<String, Double> buildValueMap(List<Map<String, Object>> groupRows,
+    private PivotResultDto transformOriginalResult(List<Map<String, Object>> rawRows,
+                                                   PivotConfigDto config,
+                                                   long totalRows, int offset, int limit) {
+        List<String> rowFieldIds = config.rows().stream().map(PivotFieldDto::fieldId).toList();
+        List<String> colFieldIds = config.columns().stream().map(PivotFieldDto::fieldId).toList();
+        List<String> allKeyIds = new ArrayList<>(rowFieldIds);
+        allKeyIds.addAll(colFieldIds);
+
+        List<PivotResultRowDto> resultRows = new ArrayList<>();
+        for (var row : rawRows) {
+            List<String> keys = allKeyIds.stream().map(id -> str(row.get(id))).toList();
+
+            Map<String, Object> values = new LinkedHashMap<>();
+            for (var vf : config.values()) {
+                String aggKey = vf.fieldId() + "_" + vf.aggregation().getValue();
+                Object val = row.get(aggKey);
+                if (val == null) val = row.get(vf.fieldId());
+                values.put(vf.name(), toValue(val, vf.aggregation()));
+            }
+            resultRows.add(new PivotResultRowDto(keys, values, null));
+        }
+
+        return new PivotResultDto(List.of(), resultRows, Map.of(), totalRows, offset, limit);
+    }
+
+    private String buildValueLabel(PivotValueFieldDto vf) {
+        if (vf.aggregation() == AggregationType.ORIGINAL) {
+            return vf.name();
+        }
+        return vf.name() + " (" + vf.aggregation().getDisplayLabel() + ")";
+    }
+
+    private Map<String, Object> buildValueMap(List<Map<String, Object>> groupRows,
                                               List<String> colKeys,
                                               List<String> colFieldIds,
                                               List<PivotValueFieldDto> valueFields) {
-        Map<String, Double> values = new LinkedHashMap<>();
+        Map<String, Object> values = new LinkedHashMap<>();
         for (var row : groupRows) {
             String colKey = colFieldIds.isEmpty() ? "" : buildColKey(row, colFieldIds);
             for (var vf : valueFields) {
                 String aggKey = vf.fieldId() + "_" + vf.aggregation().getValue();
-                String valueName = vf.name() + " (" + vf.aggregation().getValue() + ")";
-                String label;
-                if (colKey.isEmpty()) {
-                    label = valueName;
-                } else if (valueFields.size() == 1) {
-                    label = colKey; // single metric — just show column value
-                } else {
-                    label = colKey + " | " + valueName;
-                }
-                values.put(label, toDouble(row.get(aggKey)));
-            }
-        }
-        return values;
-    }
-
-    private Map<String, Double> buildTotalsMap(List<Map<String, Object>> totalsRaw,
-                                               List<String> colFieldIds,
-                                               List<PivotValueFieldDto> valueFields) {
-        Map<String, Double> totals = new LinkedHashMap<>();
-        for (var row : totalsRaw) {
-            String colKey = colFieldIds.isEmpty() ? "" : buildColKey(row, colFieldIds);
-            for (var vf : valueFields) {
-                String aggKey = vf.fieldId() + "_" + vf.aggregation().getValue();
-                String valueName = vf.name() + " (" + vf.aggregation().getValue() + ")";
+                String valueName = buildValueLabel(vf);
                 String label;
                 if (colKey.isEmpty()) {
                     label = valueName;
@@ -193,7 +208,30 @@ public class PivotService {
                 } else {
                     label = colKey + " | " + valueName;
                 }
-                totals.put(label, toDouble(row.get(aggKey)));
+                values.put(label, toValue(row.get(aggKey), vf.aggregation()));
+            }
+        }
+        return values;
+    }
+
+    private Map<String, Object> buildTotalsMap(List<Map<String, Object>> totalsRaw,
+                                               List<String> colFieldIds,
+                                               List<PivotValueFieldDto> valueFields) {
+        Map<String, Object> totals = new LinkedHashMap<>();
+        for (var row : totalsRaw) {
+            String colKey = colFieldIds.isEmpty() ? "" : buildColKey(row, colFieldIds);
+            for (var vf : valueFields) {
+                String aggKey = vf.fieldId() + "_" + vf.aggregation().getValue();
+                String valueName = buildValueLabel(vf);
+                String label;
+                if (colKey.isEmpty()) {
+                    label = valueName;
+                } else if (valueFields.size() == 1) {
+                    label = colKey;
+                } else {
+                    label = colKey + " | " + valueName;
+                }
+                totals.put(label, toValue(row.get(aggKey), vf.aggregation()));
             }
         }
         return totals;
@@ -205,6 +243,18 @@ public class PivotService {
 
     private String str(Object val) {
         return val == null ? "" : val.toString();
+    }
+
+    private Object toValue(Object val, AggregationType agg) {
+        if (agg == AggregationType.ORIGINAL) {
+            if (val == null) return null;
+            if (val instanceof Number n) return Math.round(n.doubleValue() * 100.0) / 100.0;
+            return val.toString();
+        }
+        if (agg.returnsText()) {
+            return val != null ? val.toString() : "";
+        }
+        return toDouble(val);
     }
 
     private double toDouble(Object val) {

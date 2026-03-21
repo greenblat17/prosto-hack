@@ -38,7 +38,7 @@ public class AiChatService {
             - Используй ТОЛЬКО поля из предоставленного списка
             - rows — поля для строк (обычно текстовые/категориальные)
             - columns — поля для столбцов (обычно временные или категориальные)
-            - values — поля для значений с агрегацией (sum, avg, count, min, max)
+            - values — поля для значений с агрегацией (sum, avg, count, count_distinct, list_distinct, min, max, median, variance, stddev, int_sum, first, last, running_sum, sum_pct_total, sum_pct_row, sum_pct_col, count_pct_total, count_pct_row, count_pct_col)
             - filters — фильтры (operator: eq, neq, gt, lt, in)
             - Числовые поля подходят для values, строковые — для rows/columns
             - ВСЕГДА добавляй хотя бы одно поле в values. Если нет подходящего числового — используй любое строковое с aggregation "count"

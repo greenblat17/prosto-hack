@@ -13,12 +13,20 @@ interface ChartViewProps {
 }
 
 export function ChartView({ data, mode }: ChartViewProps) {
-  const valueColumns = Object.keys(data.rows[0]?.values ?? {})
+  const allColumns = Object.keys(data.rows[0]?.values ?? {})
+  const valueColumns = allColumns.filter(col => {
+    const sample = data.rows.find(r => r.values[col] != null)
+    return sample ? typeof sample.values[col] === 'number' : true
+  })
 
-  const chartData = data.rows.map(row => ({
-    name: row.keys.join(' / '),
-    ...row.values,
-  }))
+  const chartData = data.rows.map(row => {
+    const numericValues: Record<string, number> = {}
+    for (const col of valueColumns) {
+      const v = row.values[col]
+      numericValues[col] = typeof v === 'number' ? v : 0
+    }
+    return { name: row.keys.join(' / '), ...numericValues }
+  })
 
   const commonProps = {
     data: chartData,
