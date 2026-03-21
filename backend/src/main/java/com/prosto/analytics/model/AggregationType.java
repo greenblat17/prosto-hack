@@ -4,12 +4,27 @@ import com.fasterxml.jackson.annotation.JsonCreator;
 import com.fasterxml.jackson.annotation.JsonValue;
 
 public enum AggregationType {
-    RAW("raw"),
-    SUM("sum"),
-    AVG("avg"),
+    ORIGINAL("original"),
     COUNT("count"),
+    COUNT_DISTINCT("count_distinct"),
+    LIST_DISTINCT("list_distinct"),
+    SUM("sum"),
+    INT_SUM("int_sum"),
+    AVG("avg"),
+    MEDIAN("median"),
+    VARIANCE("variance"),
+    STDDEV("stddev"),
     MIN("min"),
-    MAX("max");
+    MAX("max"),
+    FIRST("first"),
+    LAST("last"),
+    RUNNING_SUM("running_sum"),
+    SUM_PCT_TOTAL("sum_pct_total"),
+    SUM_PCT_ROW("sum_pct_row"),
+    SUM_PCT_COL("sum_pct_col"),
+    COUNT_PCT_TOTAL("count_pct_total"),
+    COUNT_PCT_ROW("count_pct_row"),
+    COUNT_PCT_COL("count_pct_col");
 
     private final String value;
 
@@ -30,7 +45,78 @@ public enum AggregationType {
         throw new IllegalArgumentException("Unknown AggregationType: " + value);
     }
 
-    public String toSql() {
-        return this == RAW ? "MIN" : name();
+    public String toSqlExpression(String column) {
+        return switch (this) {
+            case ORIGINAL -> column;
+            case COUNT -> "COUNT(" + column + ")";
+            case COUNT_DISTINCT -> "COUNT(DISTINCT " + column + ")";
+            case LIST_DISTINCT -> "STRING_AGG(DISTINCT " + column + "::text, ', ' ORDER BY " + column + "::text)";
+            case SUM -> "SUM(" + column + ")";
+            case INT_SUM -> "SUM(" + column + ")::BIGINT";
+            case AVG -> "AVG(" + column + ")";
+            case MEDIAN -> "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY " + column + ")";
+            case VARIANCE -> "VAR_SAMP(" + column + ")";
+            case STDDEV -> "STDDEV_SAMP(" + column + ")";
+            case MIN -> "MIN(" + column + ")";
+            case MAX -> "MAX(" + column + ")";
+            case FIRST -> "(ARRAY_AGG(" + column + "))[1]";
+            case LAST -> "(ARRAY_AGG(" + column + "))[array_length(ARRAY_AGG(" + column + "), 1)]";
+            case RUNNING_SUM, SUM_PCT_TOTAL, SUM_PCT_ROW, SUM_PCT_COL -> "SUM(" + column + ")";
+            case COUNT_PCT_TOTAL, COUNT_PCT_ROW, COUNT_PCT_COL -> "COUNT(" + column + ")";
+        };
+    }
+
+    public String baseSqlExpression(String column) {
+        return switch (this) {
+            case RUNNING_SUM, SUM_PCT_TOTAL, SUM_PCT_ROW, SUM_PCT_COL -> "SUM(" + column + ")";
+            case COUNT_PCT_TOTAL, COUNT_PCT_ROW, COUNT_PCT_COL -> "COUNT(" + column + ")";
+            default -> toSqlExpression(column);
+        };
+    }
+
+    public boolean isWindowFunction() {
+        return switch (this) {
+            case RUNNING_SUM, SUM_PCT_TOTAL, SUM_PCT_ROW, SUM_PCT_COL,
+                 COUNT_PCT_TOTAL, COUNT_PCT_ROW, COUNT_PCT_COL -> true;
+            default -> false;
+        };
+    }
+
+    public boolean requiresNumericColumn() {
+        return switch (this) {
+            case SUM, INT_SUM, AVG, MEDIAN, VARIANCE, STDDEV,
+                 RUNNING_SUM, SUM_PCT_TOTAL, SUM_PCT_ROW, SUM_PCT_COL -> true;
+            default -> false;
+        };
+    }
+
+    public boolean returnsText() {
+        return this == LIST_DISTINCT;
+    }
+
+    public String getDisplayLabel() {
+        return switch (this) {
+            case ORIGINAL -> "Оригинал";
+            case COUNT -> "Количество";
+            case COUNT_DISTINCT -> "Кол-во уникальных";
+            case LIST_DISTINCT -> "Список уникальных";
+            case SUM -> "Сумма";
+            case INT_SUM -> "Целочисл. сумма";
+            case AVG -> "Среднее";
+            case MEDIAN -> "Медиана";
+            case VARIANCE -> "Дисперсия";
+            case STDDEV -> "Ст. отклонение";
+            case MIN -> "Минимум";
+            case MAX -> "Максимум";
+            case FIRST -> "Первое";
+            case LAST -> "Последнее";
+            case RUNNING_SUM -> "Нарастающий итог";
+            case SUM_PCT_TOTAL -> "% от итога (сумма)";
+            case SUM_PCT_ROW -> "% от строк (сумма)";
+            case SUM_PCT_COL -> "% от колонок (сумма)";
+            case COUNT_PCT_TOTAL -> "% от итога (кол-во)";
+            case COUNT_PCT_ROW -> "% от строк (кол-во)";
+            case COUNT_PCT_COL -> "% от колонок (кол-во)";
+        };
     }
 }

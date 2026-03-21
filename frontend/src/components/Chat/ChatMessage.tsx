@@ -2,7 +2,8 @@ import { observer } from 'mobx-react-lite'
 import { cn } from '@/lib/utils'
 import { useStore } from '@/stores/RootStore'
 import { User, Bot, Check, Plus, Minus } from 'lucide-react'
-import type { PivotConfig } from '@/types/pivot'
+import type { PivotConfig, AggregationType } from '@/types/pivot'
+import { aggregationLabels } from '@/types/pivot'
 
 interface ChatMessageProps {
   message: {
@@ -51,7 +52,7 @@ function computeDiff(newConfig: PivotConfig, currentConfig: PivotConfig): DiffIt
     for (const f of newFields) {
       const id = f.fieldId || f
       if (!oldIds.has(id)) {
-        const agg = f.aggregation ? ` (${f.aggregation})` : ''
+        const agg = f.aggregation ? ` (${aggregationLabels[f.aggregation as AggregationType] ?? f.aggregation})` : ''
         items.push({ type: 'add', label: `${fieldName(f)}${agg}`, zone: label })
       }
     }

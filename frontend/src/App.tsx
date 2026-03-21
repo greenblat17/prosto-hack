@@ -7,7 +7,6 @@ import { AppHeader } from '@/components/Layout/AppHeader'
 import { StatusBar } from '@/components/Layout/StatusBar'
 import { FieldPanel } from '@/components/FieldPanel/FieldPanel'
 import { PivotBuilder } from '@/components/PivotBuilder/PivotBuilder'
-import { SQLPreview } from '@/components/PivotBuilder/SQLPreview'
 import { PivotTable } from '@/components/PivotTable/PivotTable'
 import { ChartView } from '@/components/PivotTable/ChartView'
 import { ViewToggle, type ViewMode } from '@/components/PivotTable/ViewToggle'
@@ -114,12 +113,7 @@ const CenterPanel = observer(function CenterPanel({ chatOpen, onToggleChat, fiel
 
   return (
     <div className="flex flex-col h-full">
-      {builderOpen && (
-        <>
-          <PivotBuilder />
-          <SQLPreview />
-        </>
-      )}
+      {builderOpen && <PivotBuilder />}
       <div className="flex items-center justify-between px-4 pt-3 pb-2">
         <div className="flex items-center gap-3">
           {pivotStore.isValid && (

@@ -28,38 +28,88 @@ public class AiChatService {
 
     private static final String SYSTEM_PROMPT = """
             Ты — ассистент бизнес-аналитика. Помогаешь строить сводные таблицы (pivot tables).
-
             Пользователь работает с датасетом. Тебе даны доступные поля.
             На основе запроса пользователя сгенерируй конфигурацию сводной таблицы.
 
-            ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА:
-            - fieldId должен ТОЧНО совпадать с id поля из списка доступных полей
-            - name должен совпадать с name поля
-            - Используй ТОЛЬКО поля из предоставленного списка
-            - rows — поля для строк (обычно текстовые/категориальные)
-            - columns — поля для столбцов (обычно временные или категориальные)
-            - values — поля для значений с агрегацией (sum, avg, count, min, max)
+            СТРУКТУРА КОНФИГУРАЦИИ:
+            - rows — поля для строк (категориальные/текстовые поля)
+            - columns — поля для столбцов (временные/категориальные, не обязательно)
+            - values — поля со значениями и агрегацией
             - filters — фильтры (operator: eq, neq, gt, lt, in)
-            - Числовые поля подходят для values, строковые — для rows/columns
-            - ВСЕГДА добавляй хотя бы одно поле в values. Если нет подходящего числового — используй любое строковое с aggregation "count"
-            - ВСЕГДА добавляй хотя бы одно поле в rows
-            - Если пользователь задаёт фильтр, ВСЕГДА указывай filterValue с конкретным значением из запроса. НИКОГДА не возвращай filterValue: null
-            - filterValue должен быть строкой (для eq/neq/gt/lt) или массивом строк (для in)
 
-            Отвечай СТРОГО в формате JSON:
+            ДОСТУПНЫЕ АГРЕГАЦИИ (aggregation):
+            Без группировки:
+              "original" — показать сырые данные без группировки (каждая строка как есть). ЭТО ДЕФОЛТНАЯ АГРЕГАЦИЯ.
+
+            Подсчёт:
+              "count" — количество значений
+              "count_distinct" — количество уникальных значений
+              "list_distinct" — список уникальных значений (строка через запятую)
+
+            Математические (только для числовых полей):
+              "sum" — сумма
+              "int_sum" — целочисленная сумма
+              "avg" — среднее арифметическое
+              "median" — медиана
+              "variance" — выборочная дисперсия
+              "stddev" — стандартное выборочное отклонение
+              "min" — минимум
+              "max" — максимум
+
+            Позиционные:
+              "first" — первое значение в группе
+              "last" — последнее значение в группе
+              "running_sum" — нарастающий итог (сумма за суммой)
+
+            Доли от суммы (только для числовых полей):
+              "sum_pct_total" — доля суммы от общего итога (%)
+              "sum_pct_row" — доля суммы от строки (%)
+              "sum_pct_col" — доля суммы от колонки (%)
+
+            Доли от количества:
+              "count_pct_total" — доля количества от общего итога (%)
+              "count_pct_row" — доля количества от строки (%)
+              "count_pct_col" — доля количества от колонки (%)
+
+            ОБЯЗАТЕЛЬНЫЕ ПРАВИЛА:
+            - fieldId и name ТОЧНО совпадают с полями из предоставленного списка
+            - Используй ТОЛЬКО поля из списка
+            - ВСЕГДА добавляй хотя бы одно поле в values и хотя бы одно поле в rows
+            - Если пользователь просит показать данные без агрегации / просто данные / «покажи все» — используй aggregation "original"
+            - Если пользователь просит сумму, среднее, количество и т.д. — используй соответствующую агрегацию
+            - Если пользователь не уточняет агрегацию — используй "original" для числовых полей
+            - Для фильтров: filterValue — строка (для eq/neq/gt/lt) или массив строк (для in). НИКОГДА null
+            - sum, avg, median, variance, stddev, int_sum, running_sum, sum_pct_* — только для числовых полей
+            - count, count_distinct, list_distinct, original, first, last, count_pct_* — для любых полей
+
+            ФОРМАТ ОТВЕТА — строго JSON, без markdown-обёртки:
             {
-              "text": "краткое описание что показывает таблица",
+              "text": "краткое описание что покажет таблица",
               "config": {
                 "rows": [{"fieldId": "...", "name": "..."}],
                 "columns": [],
-                "values": [{"fieldId": "...", "name": "...", "aggregation": "sum"}],
-                "filters": [{"fieldId": "...", "name": "...", "operator": "gt", "filterValue": "100"}]
+                "values": [{"fieldId": "...", "name": "...", "aggregation": "original"}],
+                "filters": []
               }
             }
 
-            Если пользователь не задал конкретный запрос для таблицы, всё равно верни JSON с базовой конфигурацией используя первые подходящие поля.
+            ПРИМЕРЫ:
+            Запрос: "покажи продажи по регионам"
+            → rows: регион, values: продажи с "original"
 
-            Отвечай только JSON, без markdown-обёртки.
+            Запрос: "сумма выручки по городам"
+            → rows: город, values: выручка с "sum"
+
+            Запрос: "средняя оценка по отделам"
+            → rows: отдел, values: оценка с "avg"
+
+            Запрос: "какие товары продаются в каждом регионе"
+            → rows: регион, values: товар с "list_distinct"
+
+            Запрос: "доля выручки каждого региона от общего"
+            → rows: регион, values: выручка с "sum_pct_total"
+
+            Отвечай только JSON.
             """;
 
     @Nullable
@@ -261,10 +311,10 @@ public class AiChatService {
                     .findFirst();
             if (numericField.isPresent()) {
                 values = List.of(new PivotValueFieldDto(numericField.get().id(),
-                        numericField.get().name(), com.prosto.analytics.model.AggregationType.SUM));
+                        numericField.get().name(), com.prosto.analytics.model.AggregationType.ORIGINAL));
             } else if (!fields.isEmpty()) {
                 values = List.of(new PivotValueFieldDto(fields.getFirst().id(),
-                        fields.getFirst().name(), com.prosto.analytics.model.AggregationType.COUNT));
+                        fields.getFirst().name(), com.prosto.analytics.model.AggregationType.ORIGINAL));
             }
         }
 
@@ -303,7 +353,7 @@ public class AiChatService {
                 ? List.<PivotValueFieldDto>of()
                 : List.of(new PivotValueFieldDto(numericFields.getFirst().id(),
                         numericFields.getFirst().name(),
-                        com.prosto.analytics.model.AggregationType.SUM));
+                        com.prosto.analytics.model.AggregationType.ORIGINAL));
 
         var config = new PivotConfigDto(rows, List.of(), values, List.of());
 

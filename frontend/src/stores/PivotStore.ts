@@ -10,8 +10,15 @@ const PivotValueFieldModel = types.model('PivotValueField', {
   fieldId: types.string,
   name: types.string,
   aggregation: types.optional(
-    types.enumeration<AggregationType>(['raw', 'sum', 'avg', 'count', 'min', 'max']),
-    'sum'
+    types.enumeration<AggregationType>([
+      'original', 'count', 'count_distinct', 'list_distinct',
+      'sum', 'int_sum', 'avg', 'median',
+      'variance', 'stddev', 'min', 'max',
+      'first', 'last', 'running_sum',
+      'sum_pct_total', 'sum_pct_row', 'sum_pct_col',
+      'count_pct_total', 'count_pct_row', 'count_pct_col',
+    ]),
+    'original'
   ),
 })
 
@@ -63,7 +70,7 @@ export const PivotStore = types
     },
   }))
   .actions(self => ({
-    addField(zone: PivotZone, fieldId: string, name: string, fieldType?: string) {
+    addField(zone: PivotZone, fieldId: string, name: string, _fieldType?: string) {
       if (zone === 'filters') {
         if (self.filters.some(f => f.fieldId === fieldId)) return
       } else {
@@ -77,7 +84,7 @@ export const PivotStore = types
           self.columns.push({ fieldId, name })
           break
         case 'values': {
-          const agg: AggregationType = fieldType === 'number' ? 'sum' : 'count'
+          const agg: AggregationType = 'original'
           self.values.push({ fieldId, name, aggregation: agg })
           break
         }
@@ -134,7 +141,7 @@ export const PivotStore = types
       self.columns.replace((config.columns ?? []) as any)
       const normalizedValues = (config.values ?? []).map(v => ({
         ...v,
-        aggregation: v.aggregation ?? 'sum',
+        aggregation: v.aggregation ?? 'original',
       }))
       self.values.replace(normalizedValues as any)
       const normalizedFilters = (config.filters ?? []).map(f => ({

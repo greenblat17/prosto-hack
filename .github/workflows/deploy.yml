@@ -1,0 +1,74 @@
+name: Deploy to VPS
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: "Branch to deploy"
+        required: false
+        default: "main"
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script: |
+            set -e
+
+            PROJECT_ROOT="/opt/prosto-analytics"
+            REPO_URL="https://github.com/${{ github.repository }}.git"
+            BRANCH="${{ github.event.inputs.branch || github.head_ref || github.ref_name }}"
+
+            if [ ! -d "$PROJECT_ROOT" ]; then
+              echo ">>> Creating project root"
+              mkdir -p "$PROJECT_ROOT"
+            fi
+
+            if [ ! -d "$PROJECT_ROOT/.git" ]; then
+              echo ">>> First run: cloning repo..."
+              git clone -b "$BRANCH" "$REPO_URL" "$PROJECT_ROOT"
+            else
+              echo ">>> Deploying branch: $BRANCH"
+              cd "$PROJECT_ROOT"
+              git fetch --force origin
+              git checkout "$BRANCH"
+              git reset --hard "origin/$BRANCH"
+            fi
+
+            cd "$PROJECT_ROOT/infra"
+
+            echo ">>> Writing .env..."
+            cat > .env <<EOF
+            AI_API_KEY=${{ secrets.AI_API_KEY }}
+            CORS_ORIGINS=http://localhost:5173,http://localhost:3000,http://147.45.233.15:3000
+            EOF
+            sed -i 's/^[[:space:]]*//' .env
+
+            echo ">>> Stopping old containers..."
+            docker compose down --remove-orphans
+
+            echo ">>> Building and starting..."
+            docker compose up -d --build
+
+            echo ">>> Waiting for backend to be healthy..."
+            for i in $(seq 1 30); do
+              if curl -sf http://localhost:8080/actuator/health > /dev/null 2>&1; then
+                echo ">>> Backend is up!"
+                break
+              fi
+              echo "    waiting... ($i/30)"
+              sleep 5
+            done
+
+            echo ">>> Deployment complete!"
+            docker compose ps
