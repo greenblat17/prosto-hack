@@ -15,7 +15,27 @@ public class PivotSqlBuilder {
 
     public record SqlQuery(String sql, List<Object> params) {}
 
+    // --- Backward-compatible overloads (default POSTGRESQL dialect) ---
+
     public SqlQuery buildPivotQuery(PivotConfigDto config, String tableName, Set<String> validColumns) {
+        return buildPivotQuery(config, tableName, validColumns, SqlDialect.POSTGRESQL);
+    }
+
+    public SqlQuery buildPivotQuery(PivotConfigDto config, String tableName, Set<String> validColumns, int offset, int limit) {
+        return buildPivotQuery(config, tableName, validColumns, offset, limit, SqlDialect.POSTGRESQL);
+    }
+
+    public SqlQuery buildCountQuery(PivotConfigDto config, String tableName, Set<String> validColumns) {
+        return buildCountQuery(config, tableName, validColumns, SqlDialect.POSTGRESQL);
+    }
+
+    public SqlQuery buildTotalsQuery(PivotConfigDto config, String tableName, Set<String> validColumns) {
+        return buildTotalsQuery(config, tableName, validColumns, SqlDialect.POSTGRESQL);
+    }
+
+    // --- Dialect-aware methods ---
+
+    public SqlQuery buildPivotQuery(PivotConfigDto config, String tableName, Set<String> validColumns, SqlDialect dialect) {
         validate(config, validColumns);
 
         boolean allOriginal = isAllOriginal(config);
@@ -55,7 +75,7 @@ public class PivotSqlBuilder {
         sql.append("SELECT ").append(String.join(", ", selectParts));
         sql.append(" FROM ").append(tableRef(tableName));
 
-        appendWhere(sql, params, config.filters(), validColumns);
+        appendWhere(sql, params, config.filters(), validColumns, dialect);
 
         if (allOriginal) {
             if (!groupByParts.isEmpty()) {
@@ -69,8 +89,8 @@ public class PivotSqlBuilder {
         return new SqlQuery(sql.toString(), params);
     }
 
-    public SqlQuery buildPivotQuery(PivotConfigDto config, String tableName, Set<String> validColumns, int offset, int limit) {
-        var query = buildPivotQuery(config, tableName, validColumns);
+    public SqlQuery buildPivotQuery(PivotConfigDto config, String tableName, Set<String> validColumns, int offset, int limit, SqlDialect dialect) {
+        var query = buildPivotQuery(config, tableName, validColumns, dialect);
         var sql = new StringBuilder(query.sql());
         var params = new ArrayList<>(query.params());
         sql.append(" LIMIT ? OFFSET ?");
@@ -79,14 +99,14 @@ public class PivotSqlBuilder {
         return new SqlQuery(sql.toString(), params);
     }
 
-    public SqlQuery buildCountQuery(PivotConfigDto config, String tableName, Set<String> validColumns) {
+    public SqlQuery buildCountQuery(PivotConfigDto config, String tableName, Set<String> validColumns, SqlDialect dialect) {
         validate(config, validColumns);
 
         var params = new ArrayList<>();
 
         if (isAllOriginal(config)) {
             var sql = new StringBuilder("SELECT COUNT(*) AS cnt FROM " + tableRef(tableName));
-            appendWhere(sql, params, config.filters(), validColumns);
+            appendWhere(sql, params, config.filters(), validColumns, dialect);
             return new SqlQuery(sql.toString(), params);
         }
 
@@ -99,14 +119,14 @@ public class PivotSqlBuilder {
         }
 
         var inner = new StringBuilder("SELECT 1 FROM " + tableRef(tableName));
-        appendWhere(inner, params, config.filters(), validColumns);
+        appendWhere(inner, params, config.filters(), validColumns, dialect);
         inner.append(" GROUP BY ").append(String.join(", ", groupByParts));
 
         var sql = "SELECT COUNT(*) AS cnt FROM (" + inner + ") sub";
         return new SqlQuery(sql, params);
     }
 
-    public SqlQuery buildTotalsQuery(PivotConfigDto config, String tableName, Set<String> validColumns) {
+    public SqlQuery buildTotalsQuery(PivotConfigDto config, String tableName, Set<String> validColumns, SqlDialect dialect) {
         validate(config, validColumns);
 
         if (isAllOriginal(config)) {
@@ -132,7 +152,7 @@ public class PivotSqlBuilder {
         sql.append("SELECT ").append(String.join(", ", selectParts));
         sql.append(" FROM ").append(tableRef(tableName));
 
-        appendWhere(sql, params, config.filters(), validColumns);
+        appendWhere(sql, params, config.filters(), validColumns, dialect);
 
         if (!groupByParts.isEmpty()) {
             sql.append(" GROUP BY ").append(String.join(", ", groupByParts));
@@ -267,7 +287,8 @@ public class PivotSqlBuilder {
     }
 
     private void appendWhere(StringBuilder sql, List<Object> params,
-                             List<PivotFilterFieldDto> filters, Set<String> validColumns) {
+                             List<PivotFilterFieldDto> filters, Set<String> validColumns,
+                             SqlDialect dialect) {
         if (filters == null || filters.isEmpty()) return;
 
         var whereParts = new ArrayList<String>();
@@ -277,24 +298,24 @@ public class PivotSqlBuilder {
 
             switch (f.operator()) {
                 case EQ -> {
-                    whereParts.add(ident(f.fieldId()) + " = ?::text");
+                    whereParts.add(ident(f.fieldId()) + " = " + dialect.castText("?"));
                     params.add(f.filterValue().getFirst());
                 }
                 case NEQ -> {
-                    whereParts.add(ident(f.fieldId()) + " != ?::text");
+                    whereParts.add(ident(f.fieldId()) + " != " + dialect.castText("?"));
                     params.add(f.filterValue().getFirst());
                 }
                 case GT -> {
-                    whereParts.add(ident(f.fieldId()) + " > ?::numeric");
+                    whereParts.add(ident(f.fieldId()) + " > " + dialect.castNumeric("?"));
                     params.add(f.filterValue().getFirst());
                 }
                 case LT -> {
-                    whereParts.add(ident(f.fieldId()) + " < ?::numeric");
+                    whereParts.add(ident(f.fieldId()) + " < " + dialect.castNumeric("?"));
                     params.add(f.filterValue().getFirst());
                 }
                 case IN -> {
                     String placeholders = f.filterValue().stream()
-                            .map(v -> "?::text")
+                            .map(v -> dialect.castText("?"))
                             .collect(Collectors.joining(", "));
                     whereParts.add(ident(f.fieldId()) + " IN (" + placeholders + ")");
                     params.addAll(f.filterValue());
@@ -305,6 +326,11 @@ public class PivotSqlBuilder {
         if (!whereParts.isEmpty()) {
             sql.append(" WHERE ").append(String.join(" AND ", whereParts));
         }
+    }
+
+    private void appendWhere(StringBuilder sql, List<Object> params,
+                             List<PivotFilterFieldDto> filters, Set<String> validColumns) {
+        appendWhere(sql, params, filters, validColumns, SqlDialect.POSTGRESQL);
     }
 
     private boolean isAllOriginal(PivotConfigDto config) {

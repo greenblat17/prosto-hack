@@ -2,6 +2,7 @@ package com.prosto.analytics.controller;
 
 import com.prosto.analytics.dto.*;
 import com.prosto.analytics.service.ConnectionService;
+import com.prosto.analytics.service.DuckDBCacheService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -17,9 +18,11 @@ import java.util.List;
 public class ConnectionController {
 
     private final ConnectionService connectionService;
+    private final DuckDBCacheService duckDBCacheService;
 
-    public ConnectionController(ConnectionService connectionService) {
+    public ConnectionController(ConnectionService connectionService, DuckDBCacheService duckDBCacheService) {
         this.connectionService = connectionService;
+        this.duckDBCacheService = duckDBCacheService;
     }
 
     @Operation(summary = "Проверить соединение", description = "Тестовое подключение без создания пула")
@@ -34,10 +37,11 @@ public class ConnectionController {
         return connectionService.connect(request, auth.getName());
     }
 
-    @Operation(summary = "Отключиться от базы данных", description = "Закрывает пул соединений")
+    @Operation(summary = "Отключиться от базы данных", description = "Закрывает пул соединений и очищает кэш")
     @DeleteMapping("/{connectionId}")
     public ResponseEntity<Void> disconnect(@PathVariable String connectionId, Authentication auth) {
         connectionService.disconnect(connectionId, auth.getName());
+        duckDBCacheService.evictByConnection(connectionId);
         return ResponseEntity.noContent().build();
     }
 
@@ -54,12 +58,17 @@ public class ConnectionController {
         return connectionService.getTables(connectionId, schema, auth.getName());
     }
 
-    @Operation(summary = "Поля таблицы", description = "Возвращает колонки с типами данных")
+    @Operation(summary = "Поля таблицы", description = "Возвращает колонки с типами данных и запускает фоновое кэширование")
     @GetMapping("/{connectionId}/schemas/{schema}/tables/{table}/fields")
     public List<TableFieldDto> getTableFields(@PathVariable String connectionId,
                                                @PathVariable String schema,
                                                @PathVariable String table,
                                                Authentication auth) {
-        return connectionService.getTableFields(connectionId, schema, table, auth.getName());
+        List<TableFieldDto> fields = connectionService.getTableFields(connectionId, schema, table, auth.getName());
+
+        // Trigger background DuckDB caching when user selects a table
+        duckDBCacheService.cacheTableAsync(connectionId, schema, table, connectionService, auth.getName());
+
+        return fields;
     }
 }

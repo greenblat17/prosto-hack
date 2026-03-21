@@ -28,6 +28,8 @@ services:
     container_name: analytics-backend
     ports:
       - "8080:8080"
+    volumes:
+      - duckdb_data:/data
     environment:
       DB_HOST: postgres
       DB_PORT: 5432
@@ -38,6 +40,9 @@ services:
       AI_API_URL: ${AI_API_URL:-https://openrouter.ai/api/v1/chat/completions}
       AI_MODEL: ${AI_MODEL:-google/gemini-2.0-flash-lite-001}
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
+      DUCKDB_PATH: /data/duckdb-cache.duckdb
+      DUCKDB_MAX_DISK_GB: "10"
+      DUCKDB_TTL_MINUTES: "30"
     depends_on:
       postgres:
         condition: service_healthy
@@ -73,3 +78,4 @@ services:
 volumes:
   pgdata:
   user_pgdata:
+  duckdb_data:
