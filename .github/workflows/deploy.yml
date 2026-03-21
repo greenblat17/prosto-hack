@@ -3,8 +3,6 @@ name: Deploy to VPS
 on:
   push:
     branches: [ "main" ]
-  pull_request:
-    branches: [ "main" ]
   workflow_dispatch:
     inputs:
       branch:
@@ -27,7 +25,7 @@ jobs:
 
             PROJECT_ROOT="/opt/prosto-analytics"
             REPO_URL="https://github.com/${{ github.repository }}.git"
-            BRANCH="${{ github.event.inputs.branch || github.head_ref || github.ref_name }}"
+            BRANCH="${{ github.event.inputs.branch || github.ref_name }}"
 
             if [ ! -d "$PROJECT_ROOT" ]; then
               echo ">>> Creating project root"
