@@ -7,6 +7,8 @@ import com.prosto.analytics.model.DatasetColumn;
 import com.prosto.analytics.model.FieldType;
 import com.prosto.analytics.repository.DatasetColumnRepository;
 import com.prosto.analytics.repository.DatasetRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
@@ -17,10 +19,13 @@ import java.util.stream.Collectors;
 @Service
 public class PivotService {
 
+    private static final Logger log = LoggerFactory.getLogger(PivotService.class);
+
     private final DatasetRepository datasetRepository;
     private final DatasetColumnRepository columnRepository;
     private final JdbcTemplate jdbcTemplate;
     private final PivotSqlBuilder sqlBuilder;
+    private final DuckDBCacheService duckDBCacheService;
 
     @Value("${app.pivot.max-result-rows:10000}")
     private int maxResultRows;
@@ -28,11 +33,13 @@ public class PivotService {
     public PivotService(DatasetRepository datasetRepository,
                         DatasetColumnRepository columnRepository,
                         JdbcTemplate jdbcTemplate,
-                        PivotSqlBuilder sqlBuilder) {
+                        PivotSqlBuilder sqlBuilder,
+                        DuckDBCacheService duckDBCacheService) {
         this.datasetRepository = datasetRepository;
         this.columnRepository = columnRepository;
         this.jdbcTemplate = jdbcTemplate;
         this.sqlBuilder = sqlBuilder;
+        this.duckDBCacheService = duckDBCacheService;
     }
 
     public PivotResultDto execute(PivotExecuteRequestDto request) {
@@ -74,24 +81,47 @@ public class PivotService {
     }
 
     public PivotResultDto executeExternal(ExternalPivotRequestDto request, ConnectionService connectionService, String userEmail) {
-        JdbcTemplate extJdbc = connectionService.getJdbc(request.connectionId(), userEmail);
-        List<TableFieldDto> fields = connectionService.getTableFields(request.connectionId(), request.schema(), request.tableName(), userEmail);
+        String connId = request.connectionId();
+        String schema = request.schema();
+        String table = request.tableName();
+        PivotConfigDto config = request.config();
+
+        // Validate fields (always from external DB metadata)
+        List<TableFieldDto> fields = connectionService.getTableFields(connId, schema, table, userEmail);
         Set<String> validColumns = fields.stream().map(TableFieldDto::name).collect(Collectors.toSet());
 
-        PivotConfigDto config = request.config();
-        String tableName = sqlBuilder.qualifiedTable(request.schema(), request.tableName());
+        // Determine target: DuckDB cache or external PostgreSQL
+        boolean useDuckDB = duckDBCacheService.isTableCached(connId, schema, table);
+
+        JdbcTemplate jdbc;
+        String tableName;
+        SqlDialect dialect;
+
+        if (useDuckDB) {
+            jdbc = duckDBCacheService.getDuckDBJdbc();
+            tableName = "\"" + duckDBCacheService.cacheTableName(connId, schema, table) + "\"";
+            dialect = SqlDialect.DUCKDB;
+            log.info("Pivot from DuckDB cache: {}.{}", schema, table);
+        } else {
+            jdbc = connectionService.getJdbc(connId, userEmail);
+            tableName = sqlBuilder.qualifiedTable(schema, table);
+            dialect = SqlDialect.POSTGRESQL;
+            log.info("Pivot from PostgreSQL: {}.{}", schema, table);
+            // Trigger background caching for next time
+            duckDBCacheService.cacheTableAsync(connId, schema, table, connectionService, userEmail);
+        }
 
         int offset = Math.max(0, request.offset() != null ? request.offset() : 0);
         int limit = Math.max(1, Math.min(request.limit() != null ? request.limit() : maxResultRows, maxResultRows));
 
-        var countQuery = sqlBuilder.buildCountQuery(config, tableName, validColumns);
-        Long totalRows = extJdbc.queryForObject(countQuery.sql(), Long.class, countQuery.params().toArray());
+        var countQuery = sqlBuilder.buildCountQuery(config, tableName, validColumns, dialect);
+        Long totalRows = jdbc.queryForObject(countQuery.sql(), Long.class, countQuery.params().toArray());
 
-        var mainQuery = sqlBuilder.buildPivotQuery(config, tableName, validColumns, offset, limit);
-        List<Map<String, Object>> rawRows = extJdbc.queryForList(mainQuery.sql(), mainQuery.params().toArray());
+        var mainQuery = sqlBuilder.buildPivotQuery(config, tableName, validColumns, offset, limit, dialect);
+        List<Map<String, Object>> rawRows = jdbc.queryForList(mainQuery.sql(), mainQuery.params().toArray());
 
-        var totalsQuery = sqlBuilder.buildTotalsQuery(config, tableName, validColumns);
-        List<Map<String, Object>> totalsRaw = extJdbc.queryForList(totalsQuery.sql(), totalsQuery.params().toArray());
+        var totalsQuery = sqlBuilder.buildTotalsQuery(config, tableName, validColumns, dialect);
+        List<Map<String, Object>> totalsRaw = jdbc.queryForList(totalsQuery.sql(), totalsQuery.params().toArray());
 
         return transformResult(rawRows, totalsRaw, config, totalRows != null ? totalRows : 0, offset, limit);
     }

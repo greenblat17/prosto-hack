@@ -56,6 +56,10 @@ app:
     allowed-origins: ${CORS_ORIGINS:http://localhost:5173,http://localhost:3000}
   pivot:
     max-result-rows: 10000
+  duckdb:
+    path: ${DUCKDB_PATH:/data/duckdb-cache.duckdb}
+    max-disk-gb: ${DUCKDB_MAX_DISK_GB:10}
+    ttl-minutes: ${DUCKDB_TTL_MINUTES:30}
   jwt:
     secret: ${JWT_SECRET:prosto-analytics-jwt-secret-key-for-development-only-minimum-256-bits}
     expiration: 86400000

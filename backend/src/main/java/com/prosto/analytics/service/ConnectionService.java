@@ -24,9 +24,11 @@ public class ConnectionService {
     private static final int MAX_CONNECTIONS_PER_USER = 3;
     private static final long IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
 
+    public record ConnectionInfo(String host, int port, String database, String username, String password) {}
+
     private record PooledConnection(HikariDataSource dataSource, JdbcTemplate jdbcTemplate,
                                      String ownerEmail, String name, String host, int port,
-                                     String database, Instant lastUsed) {}
+                                     String database, String username, String password, Instant lastUsed) {}
 
     private final ConcurrentHashMap<String, PooledConnection> connections = new ConcurrentHashMap<>();
 
@@ -78,7 +80,8 @@ public class ConnectionService {
         }
 
         connections.put(connectionId, new PooledConnection(ds, jdbc, userEmail, displayName,
-                request.host(), request.port(), request.database(), Instant.now()));
+                request.host(), request.port(), request.database(),
+                request.username(), request.password(), Instant.now()));
 
         log.info("External connection established: {} by {} -> {}:{}/{}", connectionId, userEmail,
                 request.host(), request.port(), request.database());
@@ -185,10 +188,20 @@ public class ConnectionService {
         }
     }
 
+    public ConnectionInfo getConnectionInfo(String connectionId, String userEmail) {
+        PooledConnection conn = connections.get(connectionId);
+        if (conn == null) {
+            throw new NoSuchElementException("Connection not found: " + connectionId);
+        }
+        validateOwner(conn, userEmail);
+        return new ConnectionInfo(conn.host(), conn.port(), conn.database(), conn.username(), conn.password());
+    }
+
     private void touchConnection(String connectionId, PooledConnection conn) {
         connections.put(connectionId, new PooledConnection(
                 conn.dataSource(), conn.jdbcTemplate(), conn.ownerEmail(), conn.name(),
-                conn.host(), conn.port(), conn.database(), Instant.now()));
+                conn.host(), conn.port(), conn.database(),
+                conn.username(), conn.password(), Instant.now()));
     }
 
     private String buildJdbcUrl(String host, int port, String database) {
