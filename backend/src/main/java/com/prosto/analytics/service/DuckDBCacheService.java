@@ -33,7 +33,7 @@ public class DuckDBCacheService {
     private static final int FETCH_SIZE = 50_000;
 
     private record CacheEntry(
-            String connectionId, String schema, String tableName,
+            String host, int port, String database, String schema, String tableName,
             String duckTableName, long rowCount, long cachedAtMillis
     ) {}
 
@@ -94,27 +94,29 @@ public class DuckDBCacheService {
         }
     }
 
-    public String cacheTableName(String connectionId, String schema, String tableName) {
-        String prefix = connectionId.length() >= 8 ? connectionId.substring(0, 8) : connectionId;
-        String raw = "cache_" + prefix + "_" + schema + "_" + tableName;
+    /**
+     * Stable cache table name based on host:port:db — survives reconnection.
+     */
+    public String cacheTableName(String host, int port, String database, String schema, String tableName) {
+        String raw = "cache_" + host + "_" + port + "_" + database + "_" + schema + "_" + tableName;
         return raw.replaceAll("[^a-zA-Z0-9_]", "_");
     }
 
-    public boolean isTableCached(String connectionId, String schema, String tableName) {
-        String key = cacheKey(connectionId, schema, tableName);
+    public boolean isTableCached(String host, int port, String database, String schema, String tableName) {
+        String key = cacheKey(host, port, database, schema, tableName);
         CacheEntry entry = cacheMetadata.get(key);
         if (entry == null) return false;
 
         long ttlMs = ttlMinutes * 60_000L;
         if (System.currentTimeMillis() - entry.cachedAtMillis() > ttlMs) {
-            evictTable(connectionId, schema, tableName);
+            evictTable(host, port, database, schema, tableName);
             return false;
         }
         return true;
     }
 
-    public boolean isTableLoading(String connectionId, String schema, String tableName) {
-        return inFlightLoads.containsKey(cacheKey(connectionId, schema, tableName));
+    public boolean isTableLoading(String host, int port, String database, String schema, String tableName) {
+        return inFlightLoads.containsKey(cacheKey(host, port, database, schema, tableName));
     }
 
     public JdbcTemplate getDuckDBJdbc() {
@@ -125,15 +127,16 @@ public class DuckDBCacheService {
                                                     String tableName,
                                                     ConnectionService connectionService,
                                                     String userEmail) {
-        String key = cacheKey(connectionId, schema, tableName);
+        ConnectionService.ConnectionInfo info = connectionService.getConnectionInfo(connectionId, userEmail);
+        String key = cacheKey(info.host(), info.port(), info.database(), schema, tableName);
 
-        if (isTableCached(connectionId, schema, tableName)) {
+        if (isTableCached(info.host(), info.port(), info.database(), schema, tableName)) {
             return CompletableFuture.completedFuture(null);
         }
 
         return inFlightLoads.computeIfAbsent(key, k ->
                 CompletableFuture.runAsync(
-                        () -> doCacheTable(connectionId, schema, tableName, connectionService, userEmail),
+                        () -> doCacheTable(info, schema, tableName, connectionService, connectionId, userEmail),
                         cacheExecutor
                 ).whenComplete((v, ex) -> {
                     inFlightLoads.remove(key);
@@ -144,10 +147,10 @@ public class DuckDBCacheService {
         );
     }
 
-    private void doCacheTable(String connectionId, String schema, String tableName,
-                              ConnectionService connectionService, String userEmail) {
+    private void doCacheTable(ConnectionService.ConnectionInfo info, String schema, String tableName,
+                              ConnectionService connectionService, String connectionId, String userEmail) {
         long startTime = System.currentTimeMillis();
-        String duckTable = cacheTableName(connectionId, schema, tableName);
+        String duckTable = cacheTableName(info.host(), info.port(), info.database(), schema, tableName);
 
         try {
             // 1. Get column metadata from external DB
@@ -221,9 +224,9 @@ public class DuckDBCacheService {
             }
 
             // 4. Store metadata
-            String key = cacheKey(connectionId, schema, tableName);
+            String key = cacheKey(info.host(), info.port(), info.database(), schema, tableName);
             cacheMetadata.put(key, new CacheEntry(
-                    connectionId, schema, tableName, duckTable,
+                    info.host(), info.port(), info.database(), schema, tableName, duckTable,
                     rowCount, System.currentTimeMillis()));
 
             long duration = System.currentTimeMillis() - startTime;
@@ -295,8 +298,8 @@ public class DuckDBCacheService {
         };
     }
 
-    public void evictTable(String connectionId, String schema, String tableName) {
-        String key = cacheKey(connectionId, schema, tableName);
+    public void evictTable(String host, int port, String database, String schema, String tableName) {
+        String key = cacheKey(host, port, database, schema, tableName);
         CacheEntry entry = cacheMetadata.remove(key);
         if (entry != null) {
             writeLock.lock();
@@ -312,19 +315,24 @@ public class DuckDBCacheService {
         }
     }
 
-    public void evictByConnection(String connectionId) {
-        List<CacheEntry> toEvict = cacheMetadata.values().stream()
-                .filter(e -> e.connectionId().equals(connectionId))
-                .toList();
+    public void evictByConnection(String connectionId, ConnectionService connectionService, String userEmail) {
+        try {
+            ConnectionService.ConnectionInfo info = connectionService.getConnectionInfo(connectionId, userEmail);
+            List<CacheEntry> toEvict = cacheMetadata.values().stream()
+                    .filter(e -> e.host().equals(info.host()) && e.port() == info.port()
+                            && e.database().equals(info.database()))
+                    .toList();
 
-        for (CacheEntry entry : toEvict) {
-            evictTable(entry.connectionId(), entry.schema(), entry.tableName());
-        }
+            for (CacheEntry entry : toEvict) {
+                evictTable(entry.host(), entry.port(), entry.database(), entry.schema(), entry.tableName());
+            }
 
-        inFlightLoads.entrySet().removeIf(e -> e.getKey().startsWith(connectionId));
-
-        if (!toEvict.isEmpty()) {
-            log.info("Evicted all caches for connection {} ({} tables)", connectionId, toEvict.size());
+            if (!toEvict.isEmpty()) {
+                log.info("Evicted all caches for {}:{}/{} ({} tables)",
+                        info.host(), info.port(), info.database(), toEvict.size());
+            }
+        } catch (Exception e) {
+            log.warn("Could not evict caches for connection {}: {}", connectionId, e.getMessage());
         }
     }
 
@@ -338,7 +346,7 @@ public class DuckDBCacheService {
                 .toList();
 
         for (CacheEntry entry : expired) {
-            evictTable(entry.connectionId(), entry.schema(), entry.tableName());
+            evictTable(entry.host(), entry.port(), entry.database(), entry.schema(), entry.tableName());
         }
     }
 
@@ -357,7 +365,7 @@ public class DuckDBCacheService {
                     currentSize / 1024 / 1024, maxBytes / 1024 / 1024,
                     oldest.schema(), oldest.tableName());
 
-            evictTable(oldest.connectionId(), oldest.schema(), oldest.tableName());
+            evictTable(oldest.host(), oldest.port(), oldest.database(), oldest.schema(), oldest.tableName());
             currentSize = getDatabaseSizeBytes();
         }
     }
@@ -378,8 +386,8 @@ public class DuckDBCacheService {
         return 0;
     }
 
-    private String cacheKey(String connectionId, String schema, String tableName) {
-        return connectionId + "::" + schema + "::" + tableName;
+    private String cacheKey(String host, int port, String database, String schema, String tableName) {
+        return host + ":" + port + "/" + database + "::" + schema + "::" + tableName;
     }
 
     private String ident(String name) {

@@ -1,13 +1,12 @@
 import { types, type Instance, getRoot, flow } from 'mobx-state-tree'
 import type { PivotResult } from '@/types/pivot'
-import { executePivot, fetchSQL, executeExternalPivot, fetchExternalSQL } from '@/services/api/pivotApi'
+import { executePivot, executeExternalPivot } from '@/services/api/pivotApi'
 import { exportCSV, exportExcel } from '@/services/api/exportApi'
 
 export const ResultStore = types
   .model('ResultStore', {
     loading: types.optional(types.boolean, false),
     error: types.maybeNull(types.string),
-    sql: types.maybeNull(types.string),
     viewMode: types.optional(
       types.enumeration('ViewMode', ['table', 'bar', 'line']),
       'table'
@@ -48,7 +47,6 @@ export const ResultStore = types
 
       if (!root.pivotStore.isValid || (!datasetId && !isExternal)) {
         self.data = null
-        self.sql = null
         return
       }
 
@@ -60,27 +58,15 @@ export const ResultStore = types
 
       try {
         let result: PivotResult
-        let sqlResult: string
 
         if (isExternal) {
-          const [r, s]: [PivotResult, string] = yield Promise.all([
-            executeExternalPivot(conn.connectionId, conn.selectedSchema, conn.selectedTable, config, self.offset, self.limit),
-            fetchExternalSQL(conn.connectionId, conn.selectedSchema, conn.selectedTable, config),
-          ])
-          result = r
-          sqlResult = s
+          result = yield executeExternalPivot(conn.connectionId, conn.selectedSchema, conn.selectedTable, config, self.offset, self.limit)
         } else {
-          const [r, s]: [PivotResult, string] = yield Promise.all([
-            executePivot(datasetId, config, self.offset, self.limit),
-            fetchSQL(datasetId, config),
-          ])
-          result = r
-          sqlResult = s
+          result = yield executePivot(datasetId, config, self.offset, self.limit)
         }
 
         if (token !== self._queryToken) return
         self.data = result
-        self.sql = sqlResult
       } catch (e: any) {
         if (token !== self._queryToken) return
         self.error = e.message ?? 'Ошибка выполнения запроса'
