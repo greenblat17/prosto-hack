@@ -39,7 +39,7 @@ jobs:
             else
               echo ">>> Deploying branch: $BRANCH"
               cd "$PROJECT_ROOT"
-              git fetch origin
+              git fetch --force origin
               git checkout "$BRANCH"
               git reset --hard "origin/$BRANCH"
             fi
