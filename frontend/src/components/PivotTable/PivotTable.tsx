@@ -1,5 +1,6 @@
 import { observer } from 'mobx-react-lite'
 import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { useStore } from '@/stores/RootStore'
 import { cn } from '@/lib/utils'
 import { ArrowUp, ArrowDown, ArrowUpDown, BarChart3, Type, Hash, Calendar } from 'lucide-react'
@@ -20,16 +21,12 @@ const MIN_COL_WIDTH = 80
 export const PivotTable = observer(function PivotTable() {
   const { resultStore, pivotStore } = useStore()
   const { data, loading, error } = resultStore
-  const [animateKey, setAnimateKey] = useState(0)
   const [sortCol, setSortCol] = useState<string | null>(null)
   const [sortDir, setSortDir] = useState<SortDir>(null)
   const [colWidths, setColWidths] = useState<Record<string, number>>({})
   const resizeRef = useRef<{ col: string; startX: number; startW: number } | null>(null)
 
   useEffect(() => {
-    if (data && data.rows.length > 0) {
-      setAnimateKey(k => k + 1)
-    }
     setSortCol(null)
     setSortDir(null)
     setColWidths({})
@@ -207,8 +204,17 @@ export const PivotTable = observer(function PivotTable() {
     return { width: w, minWidth: MIN_COL_WIDTH }
   }
 
+  const parentRef = useRef<HTMLDivElement>(null)
+
+  const rowVirtualizer = useVirtualizer({
+    count: sortedRows.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 40,
+    overscan: 20,
+  })
+
   return (
-    <div className="flex-1 min-h-0 overflow-auto">
+    <div ref={parentRef} className="flex-1 min-h-0 overflow-auto">
       <div className="p-4">
         <div className="rounded-xl border border-[#e2e8f0] overflow-x-auto">
           <table
@@ -250,7 +256,14 @@ export const PivotTable = observer(function PivotTable() {
               </tr>
             </thead>
             <tbody>
-              {sortedRows.map((row: { keys: string[]; values: Record<string, number | string> }, rowIdx: number) => {
+              {rowVirtualizer.getVirtualItems().length > 0 && (
+                <tr style={{ height: `${rowVirtualizer.getVirtualItems()[0].start}px` }}>
+                  <td colSpan={rowFieldNames.length + valueColumns.length} />
+                </tr>
+              )}
+              {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                const row = sortedRows[virtualRow.index] as { keys: string[]; values: Record<string, number | string> }
+                const rowIdx = virtualRow.index
                 const tooltipParts = [
                   ...row.keys.map((k: string, i: number) => `${rowFieldNames[i]}: ${k}`),
                   ...valueColumns.map(col => `${col}: ${formatValue(row.values[col])}`),
@@ -258,13 +271,9 @@ export const PivotTable = observer(function PivotTable() {
                 const tooltip = tooltipParts.join('\n')
                 return (
                   <tr
-                    key={`${animateKey}-${rowIdx}`}
+                    key={rowIdx}
                     title={tooltip}
-                    className={cn(
-                      "border-b border-[#f1f5f9] hover:bg-[#eef9f7] transition-colors even:bg-[#fafafa] cursor-default",
-                      "animate-fade-in-up"
-                    )}
-                    style={{ animationDelay: `${rowIdx * 20}ms` }}
+                    className="border-b border-[#f1f5f9] hover:bg-[#eef9f7] transition-colors even:bg-[#fafafa] cursor-default"
                   >
                     {row.keys.map((key: string, keyIdx: number) => (
                       <td
@@ -299,6 +308,11 @@ export const PivotTable = observer(function PivotTable() {
                   </tr>
                 )
               })}
+              {rowVirtualizer.getVirtualItems().length > 0 && (
+                <tr style={{ height: `${rowVirtualizer.getTotalSize() - (rowVirtualizer.getVirtualItems().at(-1)?.end ?? 0)}px` }}>
+                  <td colSpan={rowFieldNames.length + valueColumns.length} />
+                </tr>
+              )}
               {data.totals && Object.keys(data.totals).length > 0 && (
                 <tr className="font-semibold border-t-2 border-[#cbd5e1] bg-[#f8fafc]">
                   <td
