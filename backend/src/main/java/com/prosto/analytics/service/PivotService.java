@@ -7,13 +7,19 @@ import com.prosto.analytics.model.DatasetColumn;
 import com.prosto.analytics.model.FieldType;
 import com.prosto.analytics.repository.DatasetColumnRepository;
 import com.prosto.analytics.repository.DatasetRepository;
+import com.github.benmanes.caffeine.cache.Cache;
+import com.github.benmanes.caffeine.cache.Caffeine;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.time.Duration;
 import java.util.*;
+import java.util.concurrent.CompletableFuture;
 import java.util.stream.Collectors;
 
 @Service
@@ -29,6 +35,11 @@ public class PivotService {
 
     @Value("${app.pivot.max-result-rows:10000}")
     private int maxResultRows;
+
+    private final Cache<String, PivotResultDto> resultCache = Caffeine.newBuilder()
+            .maximumSize(500)
+            .expireAfterWrite(Duration.ofMinutes(5))
+            .build();
 
     public PivotService(DatasetRepository datasetRepository,
                         DatasetColumnRepository columnRepository,
@@ -67,16 +78,35 @@ public class PivotService {
         int offset = Math.max(0, request.offset() != null ? request.offset() : 0);
         int limit = Math.max(1, Math.min(request.limit() != null ? request.limit() : maxResultRows, maxResultRows));
 
+        // Check cache
+        String cacheKey = buildCacheKey(dataset.getTableName(), config, offset, limit);
+        PivotResultDto cached = resultCache.getIfPresent(cacheKey);
+        if (cached != null) {
+            log.info("Pivot cache hit: {}", dataset.getTableName());
+            return cached;
+        }
+
+        // Execute 3 queries in parallel
         var countQuery = sqlBuilder.buildCountQuery(config, dataset.getTableName(), validColumns);
-        Long totalRows = jdbcTemplate.queryForObject(countQuery.sql(), Long.class, countQuery.params().toArray());
-
         var mainQuery = sqlBuilder.buildPivotQuery(config, dataset.getTableName(), validColumns, offset, limit);
-        List<Map<String, Object>> rawRows = jdbcTemplate.queryForList(mainQuery.sql(), mainQuery.params().toArray());
-
         var totalsQuery = sqlBuilder.buildTotalsQuery(config, dataset.getTableName(), validColumns);
-        List<Map<String, Object>> totalsRaw = jdbcTemplate.queryForList(totalsQuery.sql(), totalsQuery.params().toArray());
 
-        return transformResult(rawRows, totalsRaw, config, totalRows != null ? totalRows : 0, offset, limit);
+        var countFuture = CompletableFuture.supplyAsync(
+                () -> jdbcTemplate.queryForObject(countQuery.sql(), Long.class, countQuery.params().toArray()));
+        var mainFuture = CompletableFuture.supplyAsync(
+                () -> jdbcTemplate.queryForList(mainQuery.sql(), mainQuery.params().toArray()));
+        var totalsFuture = CompletableFuture.supplyAsync(
+                () -> jdbcTemplate.queryForList(totalsQuery.sql(), totalsQuery.params().toArray()));
+
+        CompletableFuture.allOf(countFuture, mainFuture, totalsFuture).join();
+
+        Long totalRows = countFuture.join();
+        List<Map<String, Object>> rawRows = mainFuture.join();
+        List<Map<String, Object>> totalsRaw = totalsFuture.join();
+
+        PivotResultDto result = transformResult(rawRows, totalsRaw, config, totalRows != null ? totalRows : 0, offset, limit);
+        resultCache.put(cacheKey, result);
+        return result;
     }
 
     public PivotResultDto executeExternal(ExternalPivotRequestDto request, ConnectionService connectionService, String userEmail) {
@@ -118,16 +148,36 @@ public class PivotService {
         int offset = Math.max(0, request.offset() != null ? request.offset() : 0);
         int limit = Math.max(1, Math.min(request.limit() != null ? request.limit() : maxResultRows, maxResultRows));
 
+        // Check cache
+        String cacheKey = buildCacheKey(tableName, config, offset, limit);
+        PivotResultDto cached = resultCache.getIfPresent(cacheKey);
+        if (cached != null) {
+            log.info("Pivot cache hit: {}.{}", schema, table);
+            return cached;
+        }
+
+        // Execute 3 queries in parallel
         var countQuery = sqlBuilder.buildCountQuery(config, tableName, validColumns, dialect);
-        Long totalRows = jdbc.queryForObject(countQuery.sql(), Long.class, countQuery.params().toArray());
-
         var mainQuery = sqlBuilder.buildPivotQuery(config, tableName, validColumns, offset, limit, dialect);
-        List<Map<String, Object>> rawRows = jdbc.queryForList(mainQuery.sql(), mainQuery.params().toArray());
-
         var totalsQuery = sqlBuilder.buildTotalsQuery(config, tableName, validColumns, dialect);
-        List<Map<String, Object>> totalsRaw = jdbc.queryForList(totalsQuery.sql(), totalsQuery.params().toArray());
 
-        return transformResult(rawRows, totalsRaw, config, totalRows != null ? totalRows : 0, offset, limit);
+        final JdbcTemplate finalJdbc = jdbc;
+        var countFuture = CompletableFuture.supplyAsync(
+                () -> finalJdbc.queryForObject(countQuery.sql(), Long.class, countQuery.params().toArray()));
+        var mainFuture = CompletableFuture.supplyAsync(
+                () -> finalJdbc.queryForList(mainQuery.sql(), mainQuery.params().toArray()));
+        var totalsFuture = CompletableFuture.supplyAsync(
+                () -> finalJdbc.queryForList(totalsQuery.sql(), totalsQuery.params().toArray()));
+
+        CompletableFuture.allOf(countFuture, mainFuture, totalsFuture).join();
+
+        Long totalRows = countFuture.join();
+        List<Map<String, Object>> rawRows = mainFuture.join();
+        List<Map<String, Object>> totalsRaw = totalsFuture.join();
+
+        PivotResultDto result = transformResult(rawRows, totalsRaw, config, totalRows != null ? totalRows : 0, offset, limit);
+        resultCache.put(cacheKey, result);
+        return result;
     }
 
     public String previewExternalSql(ExternalPivotRequestDto request, ConnectionService connectionService, String userEmail) {
@@ -290,6 +340,17 @@ public class PivotService {
             return val != null ? val.toString() : "";
         }
         return toDouble(val);
+    }
+
+    private String buildCacheKey(String tableName, PivotConfigDto config, int offset, int limit) {
+        try {
+            String raw = tableName + "|" + config.toString() + "|" + offset + "|" + limit;
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] hash = md.digest(raw.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(hash);
+        } catch (Exception e) {
+            return tableName + "|" + config.hashCode() + "|" + offset + "|" + limit;
+        }
     }
 
     private double toDouble(Object val) {
