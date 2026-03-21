@@ -188,6 +188,14 @@ public class ConnectionService {
         }
     }
 
+    public long getTableRowCount(String connectionId, String schema, String table, String userEmail) {
+        JdbcTemplate jdbc = getJdbc(connectionId, userEmail);
+        String sql = "SELECT reltuples::bigint FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid " +
+                "WHERE n.nspname = ? AND c.relname = ?";
+        Long count = jdbc.queryForObject(sql, Long.class, schema, table);
+        return count != null && count >= 0 ? count : 0;
+    }
+
     public ConnectionInfo getConnectionInfo(String connectionId, String userEmail) {
         PooledConnection conn = connections.get(connectionId);
         if (conn == null) {

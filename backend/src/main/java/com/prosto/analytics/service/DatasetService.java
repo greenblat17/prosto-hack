@@ -75,6 +75,13 @@ public class DatasetService {
     }
 
     @Transactional(readOnly = true)
+    public long getRowCount(UUID datasetId) {
+        return datasetRepository.findById(datasetId)
+                .map(Dataset::getRowCount)
+                .orElse(0L);
+    }
+
+    @Transactional(readOnly = true)
     public List<DatasetFieldDto> getFields(UUID datasetId) {
         if (!datasetRepository.existsById(datasetId)) {
             throw new NoSuchElementException("Dataset not found: " + datasetId);

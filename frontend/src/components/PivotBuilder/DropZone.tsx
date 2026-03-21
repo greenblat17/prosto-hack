@@ -53,43 +53,48 @@ export const DropZone = observer(function DropZone({ zone, label, icon, color }:
             <span>перетащите поле</span>
           </span>
         )}
-        {fields.map((field: any) => (
-          <span
-            key={field.fieldId}
-            className={cn(
-              'inline-flex items-center gap-1.5 text-[14px] px-2.5 py-1 rounded-md font-medium',
-              colors.tag
-            )}
-          >
-            {field.name}
-            {zone === 'values' && (
-              <AggregationPicker
-                value={field.aggregation}
-                onChange={(agg: AggregationType) => { pivotStore.setAggregation(field.fieldId, agg); resultStore.executeQuery() }}
-              />
-            )}
-            {zone === 'filters' && (
-              <FilterPicker
-                name={field.name}
-                operator={field.operator}
-                value={field.filterValue}
-                onChange={(op: FilterOperator, val: string | string[]) => {
-                  pivotStore.setFilter(field.fieldId, op, val)
+        {fields.map((field: any) => {
+          const itemKey = zone === 'filters' ? field.uid : field.fieldId
+          const removeId = zone === 'filters' ? field.uid : field.fieldId
+          return (
+            <span
+              key={itemKey}
+              className={cn(
+                'inline-flex items-center gap-1.5 text-[14px] px-2.5 py-1 rounded-md font-medium',
+                colors.tag
+              )}
+            >
+              {field.name}
+              {zone === 'values' && (
+                <AggregationPicker
+                  value={field.aggregation}
+                  fieldType={field.fieldType ?? 'string'}
+                  onChange={(agg: AggregationType) => { pivotStore.setAggregation(field.fieldId, agg); resultStore.executeQuery() }}
+                />
+              )}
+              {zone === 'filters' && (
+                <FilterPicker
+                  name={field.name}
+                  operator={field.operator}
+                  value={field.filterValue}
+                  onChange={(op: FilterOperator, val: string | string[]) => {
+                    pivotStore.setFilter(field.uid, op, val)
+                    resultStore.executeQuery()
+                  }}
+                />
+              )}
+              <button
+                onClick={() => {
+                  pivotStore.removeField(zone, removeId)
                   resultStore.executeQuery()
                 }}
-              />
-            )}
-            <button
-              onClick={() => {
-                pivotStore.removeField(zone, field.fieldId)
-                resultStore.executeQuery()
-              }}
-              className="opacity-30 hover:opacity-70 transition-opacity"
-            >
-              <X className="h-3.5 w-3.5" />
-            </button>
-          </span>
-        ))}
+                className="opacity-30 hover:opacity-70 transition-opacity"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </span>
+          )
+        })}
       </div>
     </div>
   )

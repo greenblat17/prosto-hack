@@ -137,6 +137,12 @@ export const ChatPanel = observer(function ChatPanel({ onClose }: { onClose?: ()
                 <div className="h-2 w-2 rounded-full bg-[#0d9488] animate-pulse" />
                 Анализирую...
               </div>
+              <button
+                onClick={() => chatStore.cancelRequest()}
+                className="ml-auto shrink-0 px-2.5 py-1 rounded-lg text-[12px] text-[#64748b] hover:text-[#dc2626] hover:bg-[#fef2f2] border border-[#e2e8f0] transition-colors"
+              >
+                Отмена
+              </button>
             </div>
           )}
           <div ref={messagesEndRef} />

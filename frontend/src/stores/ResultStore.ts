@@ -3,6 +3,8 @@ import type { PivotResult } from '@/types/pivot'
 import { executePivot, executeExternalPivot } from '@/services/api/pivotApi'
 import { exportCSV, exportExcel } from '@/services/api/exportApi'
 
+const PIVOT_TIMEOUT_MS = 30_000
+
 export const ResultStore = types
   .model('ResultStore', {
     loading: types.optional(types.boolean, false),
@@ -17,6 +19,7 @@ export const ResultStore = types
   .volatile(() => ({
     data: null as PivotResult | null,
     _queryToken: 0,
+    _abortController: null as AbortController | null,
   }))
   .views(self => ({
     get totalRows(): number {
@@ -52,17 +55,22 @@ export const ResultStore = types
 
       if (!keepOffset) self.offset = 0
 
+      self._abortController?.abort()
+      const ac = new AbortController()
+      self._abortController = ac
+
       const token = ++self._queryToken
       self.loading = true
       self.error = null
 
       try {
         let result: PivotResult
+        const opts = { signal: ac.signal, timeoutMs: PIVOT_TIMEOUT_MS }
 
         if (isExternal) {
-          result = yield executeExternalPivot(conn.connectionId, conn.selectedSchema, conn.selectedTable, config, self.offset, self.limit)
+          result = yield executeExternalPivot(conn.connectionId, conn.selectedSchema, conn.selectedTable, config, self.offset, self.limit, opts)
         } else {
-          result = yield executePivot(datasetId, config, self.offset, self.limit)
+          result = yield executePivot(datasetId, config, self.offset, self.limit, opts)
         }
 
         if (token !== self._queryToken) return
@@ -73,6 +81,7 @@ export const ResultStore = types
       } finally {
         if (token === self._queryToken) {
           self.loading = false
+          self._abortController = null
         }
       }
     })
@@ -89,6 +98,15 @@ export const ResultStore = types
       },
       setViewMode(mode: 'table' | 'bar' | 'line') {
         self.viewMode = mode
+      },
+      cancelQuery() {
+        if (self._abortController) {
+          self._abortController.abort()
+          self._abortController = null
+          self._queryToken++
+          self.loading = false
+          self.error = 'Запрос отменён'
+        }
       },
       exportToCSV: flow(function* () {
         if (!self.data) return

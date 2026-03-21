@@ -32,7 +32,7 @@ export const aggregationLabels: Record<AggregationType, string> = {
 
 export type PivotZone = 'rows' | 'columns' | 'values' | 'filters'
 
-export type FilterOperator = 'eq' | 'neq' | 'gt' | 'lt' | 'in'
+export type FilterOperator = 'eq' | 'neq' | 'gt' | 'gte' | 'lt' | 'lte' | 'in'
 
 export interface PivotField {
   fieldId: string

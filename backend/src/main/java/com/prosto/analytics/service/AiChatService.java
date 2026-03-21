@@ -15,10 +15,7 @@ import org.springframework.lang.Nullable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.ArrayList;
-import java.util.List;
-import java.util.NoSuchElementException;
-import java.util.UUID;
+import java.util.*;
 import java.util.stream.Collectors;
 
 @Service
@@ -35,7 +32,7 @@ public class AiChatService {
             - rows — поля для строк (категориальные/текстовые поля)
             - columns — поля для столбцов (временные/категориальные, не обязательно)
             - values — поля со значениями и агрегацией
-            - filters — фильтры (operator: eq, neq, gt, lt, in)
+            - filters — фильтры (operator: eq, neq, gt, gte, lt, lte, in)
 
             ДОСТУПНЫЕ АГРЕГАЦИИ (aggregation):
             Без группировки:
@@ -78,9 +75,18 @@ public class AiChatService {
             - Если пользователь просит показать данные без агрегации / просто данные / «покажи все» — используй aggregation "original"
             - Если пользователь просит сумму, среднее, количество и т.д. — используй соответствующую агрегацию
             - Если пользователь не уточняет агрегацию — используй "original" для числовых полей
-            - Для фильтров: filterValue — строка (для eq/neq/gt/lt) или массив строк (для in). НИКОГДА null
+            - Для фильтров: filterValue — строка (для eq/neq/gt/gte/lt/lte) или массив строк (для in). НИКОГДА null
+            - Для диапазонов дат используй ДВА фильтра на одно поле: gte для начала, lte для конца. Формат дат: YYYY-MM-DD
+            - "1 квартал 2025" → gte "2025-01-01" + lte "2025-03-31"; "2 квартал" → gte "2025-04-01" + lte "2025-06-30"
             - sum, avg, median, variance, stddev, int_sum, running_sum, sum_pct_* — только для числовых полей
             - count, count_distinct, list_distinct, original, first, last, count_pct_* — для любых полей
+
+            ОПТИМИЗАЦИЯ ДЛЯ БОЛЬШИХ ДАТАСЕТОВ:
+            Тебе будет указано количество строк в датасете (rowCount).
+            - Если rowCount > 100 000: ИЗБЕГАЙ aggregation "original" — предпочитай "sum", "count", "avg" и т.д. для группировки данных. "original" на миллионах строк убивает производительность.
+            - Если rowCount > 100 000 и пользователь просит «покажи всё» или сырые данные: ОБЯЗАТЕЛЬНО добавь фильтры, чтобы ограничить выборку. Предупреди в text, что показываешь часть данных.
+            - Если rowCount > 1 000 000: ВСЕГДА используй агрегацию (count, sum, avg и т.д.), НИКОГДА "original". Объясни в text, почему группируешь.
+            - list_distinct и median на больших датасетах (> 1 000 000) тоже тяжёлые — избегай их без фильтров.
 
             ФОРМАТ ОТВЕТА — строго JSON, без markdown-обёртки:
             {
@@ -109,31 +115,40 @@ public class AiChatService {
             Запрос: "доля выручки каждого региона от общего"
             → rows: регион, values: выручка с "sum_pct_total"
 
+            Запрос: "количество сделок в Балашихе во 2 квартале 2025"
+            → rows: (подходящее поле), values: сделки с "count", filters: [{город eq "Балашиха"}, {дата gte "2025-04-01"}, {дата lte "2025-06-30"}]
+
+            Запрос: "продажи за январь 2025"
+            → filters: [{дата gte "2025-01-01"}, {дата lte "2025-01-31"}]
+
             Отвечай только JSON.
             """;
 
     @Nullable
-    private final GigaChatClient gigaChatClient;
+    private final AiClient aiClient;
     private final DatasetService datasetService;
+    private final PivotService pivotService;
     private final JsonMapper objectMapper;
     private final ChatSessionRepository sessionRepository;
     private final ChatMessageRepository messageRepository;
     private final UserRepository userRepository;
 
-    public AiChatService(@Nullable GigaChatClient gigaChatClient,
+    public AiChatService(@Nullable AiClient aiClient,
                          DatasetService datasetService,
+                         PivotService pivotService,
                          JsonMapper objectMapper,
                          ChatSessionRepository sessionRepository,
                          ChatMessageRepository messageRepository,
                          UserRepository userRepository) {
-        this.gigaChatClient = gigaChatClient;
+        this.aiClient = aiClient;
         this.datasetService = datasetService;
+        this.pivotService = pivotService;
         this.objectMapper = objectMapper;
         this.sessionRepository = sessionRepository;
         this.messageRepository = messageRepository;
         this.userRepository = userRepository;
 
-        if (gigaChatClient == null) {
+        if (aiClient == null) {
             log.warn("AI chat disabled: AI_API_KEY not configured. Chat endpoints will return fallback responses.");
         }
     }
@@ -166,7 +181,7 @@ public class AiChatService {
         }
 
         ChatResponseDto result;
-        if (gigaChatClient == null) {
+        if (aiClient == null) {
             result = fallbackResponse(message, datasetId);
         } else {
             result = doProcessMessage(message, datasetId, session);
@@ -191,39 +206,45 @@ public class AiChatService {
         return result;
     }
 
-    public ChatResponseDto processExternalMessage(String message, List<DatasetFieldDto> fields) {
-        if (gigaChatClient == null) {
+    public ChatResponseDto processExternalMessage(String message, List<DatasetFieldDto> fields, long rowCount) {
+        if (aiClient == null) {
             return fallbackResponseFromFields(message, fields);
         }
-        return doProcessMessageWithFields(message, fields, null);
+        return doProcessMessageWithFields(message, fields, rowCount, null);
     }
 
     private ChatResponseDto doProcessMessage(String message, UUID datasetId, @Nullable ChatSession session) {
         List<DatasetFieldDto> fields = datasetService.getFields(datasetId);
-        return doProcessMessageWithFields(message, fields, session);
+        long rowCount = datasetService.getRowCount(datasetId);
+        return doProcessMessageWithFields(message, fields, rowCount, session);
     }
 
-    private ChatResponseDto doProcessMessageWithFields(String message, List<DatasetFieldDto> fields, @Nullable ChatSession session) {
+    private ChatResponseDto doProcessMessageWithFields(String message, List<DatasetFieldDto> fields, long rowCount, @Nullable ChatSession session) {
         String fieldsDescription = fields.stream()
                 .map(f -> "  {id: \"" + f.id() + "\", name: \"" + f.name() +
                         "\", type: \"" + f.type().getValue() + "\", category: \"" + f.category() + "\"}")
                 .collect(Collectors.joining("\n"));
 
-        List<GigaChatClient.Message> history = new ArrayList<>();
+        List<AiClient.Message> history = new ArrayList<>();
         if (session != null) {
             var recentMessages = messageRepository.findTop20BySessionIdOrderByCreatedAtDesc(session.getId());
             for (int i = recentMessages.size() - 1; i >= 0; i--) {
                 var m = recentMessages.get(i);
                 if (i == 0 && m.getRole().equals("user") && m.getText().equals(message)) continue;
-                history.add(new GigaChatClient.Message(m.getRole(), m.getText()));
+                history.add(new AiClient.Message(m.getRole(), m.getText()));
             }
         }
 
         String userPrompt = "Доступные поля датасета:\n" + fieldsDescription +
+                "\n\nКоличество строк в датасете (rowCount): " + rowCount +
                 "\n\nЗапрос пользователя: " + message;
 
+        log.info("Chat prompt: fields={}, rowCount={}, historySize={}, message='{}'",
+                fields.size(), rowCount, history.size(), message);
+        log.debug("Chat user prompt:\n{}", userPrompt);
+
         try {
-            String response = gigaChatClient.chatWithHistory(SYSTEM_PROMPT, history, userPrompt);
+            String response = aiClient.chatWithHistory(SYSTEM_PROMPT, history, userPrompt);
 
             var parsed = parseResponse(response);
             var sanitized = sanitizeResponse(parsed, fields);
@@ -241,50 +262,173 @@ public class AiChatService {
         }
     }
 
-    public String explainTable(ExplainRequestDto request) {
-        if (gigaChatClient == null) {
-            return fallbackExplain(request);
+    public String explainTable(ExplainRequestDto request,
+                               @Nullable ConnectionService connectionService,
+                               @Nullable String userEmail) {
+        PivotResultDto result;
+        if (request.datasetId() != null) {
+            result = pivotService.executeForExplain(request.datasetId(), request.config());
+        } else if (request.connectionId() != null && connectionService != null && userEmail != null) {
+            result = pivotService.executeExternalForExplain(
+                    request.connectionId(), request.schema(), request.tableName(),
+                    request.config(), connectionService, userEmail);
+        } else {
+            return "Не указан источник данных (datasetId или connectionId)";
         }
 
-        String configJson;
-        String resultJson;
-        try {
-            configJson = objectMapper.writeValueAsString(request.config());
-            var shortRows = request.result().rows().size() > 20
-                    ? request.result().rows().subList(0, 20)
-                    : request.result().rows();
-            var shortResult = new PivotResultDto(
-                    request.result().columnKeys(),
-                    shortRows,
-                    request.result().totals(),
-                    request.result().totalRows(),
-                    request.result().offset(),
-                    request.result().limit()
-            );
-            resultJson = objectMapper.writeValueAsString(shortResult);
-        } catch (JacksonException e) {
-            return "Ошибка сериализации данных";
+        if (aiClient == null) {
+            return fallbackExplain(result);
         }
 
-        String prompt = """
-                Проанализируй результаты сводной таблицы и дай краткие бизнес-выводы на русском языке.
-                
-                Конфигурация таблицы:
-                %s
-                
-                Результаты (первые строки):
-                %s
-                
-                Дай 3-5 ключевых инсайтов в виде маркированного списка. Укажи лидеров, аутсайдеров,
-                значимые различия и тренды. Используй конкретные цифры.
-                """.formatted(configJson, resultJson);
+        String prompt = buildExplainPrompt(request.config(), result);
+        log.info("Explain prompt length: {} chars, groups: {}", prompt.length(), result.rows().size());
+        log.debug("Explain prompt:\n{}", prompt);
 
         try {
-            return gigaChatClient.chat("", prompt);
+            return aiClient.chat("", prompt);
         } catch (Exception e) {
             log.error("AI explain error", e);
             return "Не удалось сгенерировать аналитику: " + e.getMessage();
         }
+    }
+
+    private static final int MAX_DUMP_CHARS = 50_000;
+
+    private String buildExplainPrompt(PivotConfigDto config, PivotResultDto result) {
+        var sb = new StringBuilder();
+        sb.append("Проанализируй результаты сводной таблицы и дай краткие бизнес-выводы на русском языке.\n\n");
+
+        try {
+            sb.append("Конфигурация таблицы:\n").append(objectMapper.writeValueAsString(config)).append("\n\n");
+        } catch (JacksonException ignored) {}
+
+        sb.append("Строк в источнике: ").append(result.totalRows()).append("\n");
+        sb.append("Групп в результате pivot: ").append(result.rows().size()).append("\n\n");
+
+        if (result.totals() != null && !result.totals().isEmpty()) {
+            sb.append("Итоги (по всем данным): ").append(result.totals()).append("\n\n");
+        }
+
+        var stats = computeStatistics(result);
+        if (!stats.isEmpty()) {
+            sb.append("Статистика:\n");
+            for (var entry : stats.entrySet()) {
+                sb.append("  ").append(entry.getKey()).append(": ").append(entry.getValue()).append("\n");
+            }
+            sb.append("\n");
+        }
+
+        var dump = buildCompactDump(result);
+        boolean truncated = false;
+        if (!dump.isEmpty()) {
+            for (var entry : dump.entrySet()) {
+                sb.append("Все группы по ").append(entry.getKey()).append(" (desc):\n");
+                sb.append("  ").append(entry.getValue()).append("\n\n");
+                if (entry.getValue().contains("... ещё")) truncated = true;
+            }
+        }
+
+        sb.append("""
+                На основе полных данных выше дай 3-5 ключевых инсайтов. Укажи лидеров, аутсайдеров, значимые различия и тренды. Используй конкретные цифры.
+                ФОРМАТ: простой текст без markdown-разметки. Без **, ##, ```. Каждый инсайт — отдельный абзац с тире в начале.""");
+
+        if (truncated) {
+            sb.append("""
+                \n\nВАЖНО: данные были обрезаны из-за слишком большого числа групп. В последнем инсайте ОБЯЗАТЕЛЬНО порекомендуй пользователю укрупнить группировку (например, группировать по региону вместо города, по месяцу вместо дня) или добавить фильтры, чтобы получить более точный и полный анализ.""");
+        }
+
+        return sb.toString();
+    }
+
+    private Map<String, String> computeStatistics(PivotResultDto result) {
+        if (result.rows().isEmpty()) return Map.of();
+
+        Set<String> valueKeys = new LinkedHashSet<>();
+        for (var row : result.rows()) {
+            if (row.values() != null) valueKeys.addAll(row.values().keySet());
+        }
+
+        Map<String, String> stats = new LinkedHashMap<>();
+        for (String key : valueKeys) {
+            List<Double> nums = new ArrayList<>();
+            for (var row : result.rows()) {
+                Object val = row.values() != null ? row.values().get(key) : null;
+                if (val instanceof Number n) {
+                    nums.add(n.doubleValue());
+                }
+            }
+            if (nums.isEmpty()) continue;
+
+            nums.sort(Double::compareTo);
+            int n = nums.size();
+            double sum = nums.stream().mapToDouble(Double::doubleValue).sum();
+            double avg = sum / n;
+            double min = nums.getFirst();
+            double max = nums.getLast();
+            double median = percentile(nums, 50);
+            double q1 = percentile(nums, 25);
+            double q3 = percentile(nums, 75);
+            double variance = nums.stream().mapToDouble(v -> (v - avg) * (v - avg)).sum() / n;
+            double stddev = Math.sqrt(variance);
+
+            stats.put(key, "count=%d, sum=%.2f, avg=%.2f, min=%.2f, max=%.2f, Q1=%.2f, median=%.2f, Q3=%.2f, stddev=%.2f"
+                    .formatted(n, sum, avg, min, max, q1, median, q3, stddev));
+        }
+        return stats;
+    }
+
+    private static double percentile(List<Double> sorted, int p) {
+        if (sorted.size() == 1) return sorted.getFirst();
+        double rank = (p / 100.0) * (sorted.size() - 1);
+        int lower = (int) Math.floor(rank);
+        int upper = Math.min(lower + 1, sorted.size() - 1);
+        double frac = rank - lower;
+        return sorted.get(lower) + frac * (sorted.get(upper) - sorted.get(lower));
+    }
+
+    private Map<String, String> buildCompactDump(PivotResultDto result) {
+        if (result.rows().isEmpty()) return Map.of();
+
+        Set<String> valueKeys = new LinkedHashSet<>();
+        for (var row : result.rows()) {
+            if (row.values() != null) valueKeys.addAll(row.values().keySet());
+        }
+
+        Map<String, String> dump = new LinkedHashMap<>();
+        for (String key : valueKeys) {
+            var sorted = result.rows().stream()
+                    .filter(r -> r.values() != null && r.values().get(key) != null)
+                    .sorted((a, b) -> {
+                        Object av = a.values().get(key), bv = b.values().get(key);
+                        if (av instanceof Number an && bv instanceof Number bn)
+                            return Double.compare(bn.doubleValue(), an.doubleValue());
+                        return String.valueOf(bv).compareTo(String.valueOf(av));
+                    })
+                    .toList();
+
+            var sb = new StringBuilder();
+            int totalChars = 0;
+            int shown = 0;
+            int remaining = sorted.size();
+
+            for (var row : sorted) {
+                String keyLabel = String.join("/", row.keys());
+                String entry = keyLabel + ": " + row.values().get(key);
+
+                if (totalChars + entry.length() + 3 > MAX_DUMP_CHARS && shown > 0) {
+                    sb.append(" | ... ещё ").append(remaining).append(" групп");
+                    break;
+                }
+
+                if (shown > 0) sb.append(" | ");
+                sb.append(entry);
+                totalChars += entry.length() + 3;
+                shown++;
+                remaining--;
+            }
+            dump.put(key, sb.toString());
+        }
+        return dump;
     }
 
     private ChatResponseDto sanitizeResponse(ChatResponseDto response, List<DatasetFieldDto> fields) {
@@ -363,9 +507,9 @@ public class AiChatService {
         );
     }
 
-    private String fallbackExplain(ExplainRequestDto request) {
-        int rowCount = request.result().rows().size();
-        int totalCount = request.result().totals() != null ? request.result().totals().size() : 0;
+    private String fallbackExplain(PivotResultDto result) {
+        int rowCount = result.rows().size();
+        int totalCount = result.totals() != null ? result.totals().size() : 0;
         return "AI-ассистент не настроен. Таблица содержит %d строк и %d метрик.".formatted(rowCount, totalCount);
     }
 

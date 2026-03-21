@@ -1,7 +1,7 @@
 package com.prosto.analytics.config;
 
 import tools.jackson.databind.json.JsonMapper;
-import com.prosto.analytics.service.GigaChatClient;
+import com.prosto.analytics.service.AiClient;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -25,8 +25,14 @@ public class AiConfig {
     @Value("${ai.temperature:0.2}")
     private double temperature;
 
+    @Value("${ai.http-referer:}")
+    private String httpReferer;
+
+    @Value("${ai.app-title:}")
+    private String appTitle;
+
     @Bean
-    public GigaChatClient gigaChatClient(JsonMapper objectMapper) {
+    public AiClient aiClient(JsonMapper objectMapper) {
         if (apiKey == null || apiKey.isBlank()) {
             log.warn("AI API key not configured (AI_API_KEY) — AI features will use fallback responses");
             return null;
@@ -40,6 +46,6 @@ public class AiConfig {
             return null;
         }
         log.info("AI configured: url={} model={}", apiUrl, model);
-        return new GigaChatClient(apiUrl, apiKey, model, temperature, objectMapper);
+        return new AiClient(apiUrl, apiKey, model, temperature, objectMapper, httpReferer, appTitle);
     }
 }

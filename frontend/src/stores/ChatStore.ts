@@ -9,6 +9,9 @@ import {
 } from '@/services/api/chatApi'
 import type { ChatSession, ChatMessageDto } from '@/types/chat'
 
+const CHAT_TIMEOUT_MS = 60_000
+const EXPLAIN_TIMEOUT_MS = 90_000
+
 const ChatMessageModel = types.model('ChatMessage', {
   id: types.identifier,
   role: types.enumeration(['user', 'assistant']),
@@ -27,6 +30,7 @@ export const ChatStore = types
   .volatile(() => ({
     sessions: [] as ChatSession[],
     sessionsLoading: false,
+    _abortController: null as AbortController | null,
   }))
   .actions(self => ({
     loadSessions: flow(function* () {
@@ -37,7 +41,6 @@ export const ChatStore = types
       self.sessionsLoading = true
       try {
         self.sessions = yield fetchSessionsApi(datasetId)
-        // If we have sessions but none selected, select the first one
         if (self.sessions.length > 0 && !self.currentSessionId) {
           const first = self.sessions[0]
           self.currentSessionId = first.id
@@ -96,19 +99,25 @@ export const ChatStore = types
       }
     }),
 
+    cancelRequest() {
+      if (self._abortController) {
+        self._abortController.abort()
+        self._abortController = null
+        self.loading = false
+      }
+    },
+
     sendMessage: flow(function* (text: string) {
       const root = getRoot(self) as any
       const datasetId = root.datasetStore.currentDatasetId
       if (!datasetId) return
 
-      // Auto-create session if none exists
       if (!self.currentSessionId) {
         const session: ChatSession = yield createSessionApi(datasetId)
         self.sessions.unshift(session)
         self.currentSessionId = session.id
       }
 
-      // Optimistic user message
       const userMsg = {
         id: `msg-${Date.now()}`,
         role: 'user' as const,
@@ -116,11 +125,18 @@ export const ChatStore = types
         timestamp: Date.now(),
       }
       self.messages.push(userMsg)
+
+      self._abortController?.abort()
+      const ac = new AbortController()
+      self._abortController = ac
       self.loading = true
 
       try {
         const response: Awaited<ReturnType<typeof sendMessageApi>> =
-          yield sendMessageApi(text, datasetId, self.currentSessionId ?? undefined)
+          yield sendMessageApi(text, datasetId, self.currentSessionId ?? undefined, {
+            signal: ac.signal,
+            timeoutMs: CHAT_TIMEOUT_MS,
+          })
 
         const assistantMsg = {
           id: `msg-${Date.now()}-ai`,
@@ -132,7 +148,6 @@ export const ChatStore = types
         }
         self.messages.push(assistantMsg)
 
-        // Update session title in local list
         if (self.currentSessionId) {
           const session = self.sessions.find(s => s.id === self.currentSessionId)
           if (session && session.title === 'Новый чат') {
@@ -140,6 +155,7 @@ export const ChatStore = types
           }
         }
       } catch (e: any) {
+        if (e.message === 'Запрос отменён') return
         const errorMsg = {
           id: `msg-${Date.now()}-err`,
           role: 'assistant' as const,
@@ -149,27 +165,41 @@ export const ChatStore = types
         self.messages.push(errorMsg)
       } finally {
         self.loading = false
+        self._abortController = null
       }
     }),
 
     requestExplain: flow(function* () {
       const root = getRoot(self) as any
-      const data = root.resultStore.data
       const config = root.pivotStore.configSnapshot
-      if (!data || data.rows.length === 0) return
+      const datasetId = root.datasetStore.currentDatasetId
+      const conn = root.connectionStore
+
+      const isExternal = conn?.isConnected && conn.connectionId && conn.selectedSchema && conn.selectedTable
+      if (!datasetId && !isExternal) return
 
       const userMsg = {
         id: `msg-${Date.now()}`,
         role: 'user' as const,
-        text: 'Explain this table',
+        text: 'Проанализируй эту таблицу',
         timestamp: Date.now(),
       }
       self.messages.push(userMsg)
+
+      self._abortController?.abort()
+      const ac = new AbortController()
+      self._abortController = ac
       self.loading = true
 
       try {
-        const plainData = JSON.parse(JSON.stringify(data))
-        const explanation: string = yield explainTableApi(config, plainData)
+        const request: Parameters<typeof explainTableApi>[0] = isExternal
+          ? { config, connectionId: conn.connectionId, schema: conn.selectedSchema, tableName: conn.selectedTable }
+          : { config, datasetId }
+
+        const explanation: string = yield explainTableApi(request, {
+          signal: ac.signal,
+          timeoutMs: EXPLAIN_TIMEOUT_MS,
+        })
         const assistantMsg = {
           id: `msg-${Date.now()}-ai`,
           role: 'assistant' as const,
@@ -178,6 +208,7 @@ export const ChatStore = types
         }
         self.messages.push(assistantMsg)
       } catch (e: any) {
+        if (e.message === 'Запрос отменён') return
         const errorMsg = {
           id: `msg-${Date.now()}-err`,
           role: 'assistant' as const,
@@ -187,6 +218,7 @@ export const ChatStore = types
         self.messages.push(errorMsg)
       } finally {
         self.loading = false
+        self._abortController = null
       }
     }),
 

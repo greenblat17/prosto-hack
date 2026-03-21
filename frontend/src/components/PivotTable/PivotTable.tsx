@@ -3,7 +3,7 @@ import { useEffect, useState, useMemo, useRef, useCallback } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useStore } from '@/stores/RootStore'
 import { cn } from '@/lib/utils'
-import { ArrowUp, ArrowDown, ArrowUpDown, BarChart3, Type, Hash, Calendar } from 'lucide-react'
+import { ArrowUp, ArrowDown, ArrowUpDown, BarChart3, Type, Hash, Calendar, X } from 'lucide-react'
 
 function formatValue(v: number | string): string {
   if (v == null) return '—'
@@ -119,6 +119,15 @@ export const PivotTable = observer(function PivotTable() {
     return rows
   }, [data, sortCol, sortDir, rowFieldNames])
 
+  const parentRef = useRef<HTMLDivElement>(null)
+
+  const rowVirtualizer = useVirtualizer({
+    count: sortedRows.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 40,
+    overscan: 20,
+  })
+
   function SortIcon({ col }: { col: string }) {
     if (sortCol !== col) return <ArrowUpDown className="h-3 w-3 opacity-0 group-hover:opacity-40 transition-opacity" />
     if (sortDir === 'asc') return <ArrowUp className="h-3 w-3 text-[#0d9488]" />
@@ -169,8 +178,18 @@ export const PivotTable = observer(function PivotTable() {
 
   if (loading) {
     return (
-      <div className="flex-1 flex items-center justify-center">
-        <div className="text-[14px] text-[#94a3b8]">Загрузка...</div>
+      <div className="flex-1 flex flex-col items-center justify-center gap-3">
+        <div className="flex items-center gap-2 text-[14px] text-[#94a3b8]">
+          <div className="h-2 w-2 rounded-full bg-[#0d9488] animate-pulse" />
+          Выполняется запрос...
+        </div>
+        <button
+          onClick={() => resultStore.cancelQuery()}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[13px] text-[#64748b] hover:text-[#dc2626] hover:bg-[#fef2f2] border border-[#e2e8f0] transition-colors"
+        >
+          <X className="h-3.5 w-3.5" />
+          Отменить
+        </button>
       </div>
     )
   }
@@ -203,15 +222,6 @@ export const PivotTable = observer(function PivotTable() {
     if (!w) return undefined
     return { width: w, minWidth: MIN_COL_WIDTH }
   }
-
-  const parentRef = useRef<HTMLDivElement>(null)
-
-  const rowVirtualizer = useVirtualizer({
-    count: sortedRows.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 40,
-    overscan: 20,
-  })
 
   return (
     <div ref={parentRef} className="flex-1 min-h-0 overflow-auto">
