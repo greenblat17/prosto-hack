@@ -21,13 +21,17 @@ class ApiError extends Error {
   }
 }
 
-async function handleResponse<T>(res: Response): Promise<T> {
+function handleUnauthorized(res: Response): void {
   if (res.status === 401) {
     localStorage.removeItem('auth_token')
     localStorage.removeItem('auth_email')
     window.location.href = '/login'
     throw new ApiError(401, 'Unauthorized')
   }
+}
+
+async function handleResponse<T>(res: Response): Promise<T> {
+  handleUnauthorized(res)
   if (!res.ok) {
     const body = await res.text()
     let message = `HTTP ${res.status}`
@@ -66,12 +70,7 @@ export async function postText(path: string, body: unknown): Promise<string> {
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
   })
-  if (res.status === 401) {
-    localStorage.removeItem('auth_token')
-    localStorage.removeItem('auth_email')
-    window.location.href = '/login'
-    throw new ApiError(401, 'Unauthorized')
-  }
+  handleUnauthorized(res)
   if (!res.ok) {
     const text = await res.text()
     throw new ApiError(res.status, text)
@@ -105,12 +104,7 @@ export async function postBlob(path: string, body: unknown, filename: string): P
     headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body),
   })
-  if (res.status === 401) {
-    localStorage.removeItem('auth_token')
-    localStorage.removeItem('auth_email')
-    window.location.href = '/login'
-    throw new ApiError(401, 'Unauthorized')
-  }
+  handleUnauthorized(res)
   if (!res.ok) {
     const text = await res.text()
     throw new ApiError(res.status, text)

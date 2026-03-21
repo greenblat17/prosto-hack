@@ -2,6 +2,7 @@ name: Deploy to VPS
 
 on:
   push:
+    branches: [ "main" ]
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
@@ -47,7 +48,11 @@ jobs:
             cd "$PROJECT_ROOT/infra"
 
             echo ">>> Writing .env..."
-            echo "AI_API_KEY=${{ secrets.AI_API_KEY }}" > .env
+            cat > .env <<EOF
+            AI_API_KEY=${{ secrets.AI_API_KEY }}
+            CORS_ORIGINS=http://localhost:5173,http://localhost:3000,http://147.45.233.15:3000
+            EOF
+            sed -i 's/^[[:space:]]*//' .env
 
             echo ">>> Stopping old containers..."
             docker compose down --remove-orphans
