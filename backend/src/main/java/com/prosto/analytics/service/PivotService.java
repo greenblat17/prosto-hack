@@ -89,8 +89,12 @@ public class PivotService {
         List<TableFieldDto> fields = connectionService.getTableFields(connId, schema, table, userEmail);
         Set<String> validColumns = fields.stream().map(TableFieldDto::name).collect(Collectors.toSet());
 
+        // Get stable connection info for cache lookup (survives reconnection)
+        ConnectionService.ConnectionInfo connInfo = connectionService.getConnectionInfo(connId, userEmail);
+
         // Determine target: DuckDB cache or external PostgreSQL
-        boolean useDuckDB = duckDBCacheService.isTableCached(connId, schema, table);
+        boolean useDuckDB = duckDBCacheService.isTableCached(
+                connInfo.host(), connInfo.port(), connInfo.database(), schema, table);
 
         JdbcTemplate jdbc;
         String tableName;
@@ -98,7 +102,8 @@ public class PivotService {
 
         if (useDuckDB) {
             jdbc = duckDBCacheService.getDuckDBJdbc();
-            tableName = duckDBCacheService.cacheTableName(connId, schema, table);
+            tableName = duckDBCacheService.cacheTableName(
+                    connInfo.host(), connInfo.port(), connInfo.database(), schema, table);
             dialect = SqlDialect.DUCKDB;
             log.info("Pivot from DuckDB cache: {}.{}", schema, table);
         } else {

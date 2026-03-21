@@ -40,8 +40,8 @@ public class ConnectionController {
     @Operation(summary = "Отключиться от базы данных", description = "Закрывает пул соединений и очищает кэш")
     @DeleteMapping("/{connectionId}")
     public ResponseEntity<Void> disconnect(@PathVariable String connectionId, Authentication auth) {
+        duckDBCacheService.evictByConnection(connectionId, connectionService, auth.getName());
         connectionService.disconnect(connectionId, auth.getName());
-        duckDBCacheService.evictByConnection(connectionId);
         return ResponseEntity.noContent().build();
     }
 
