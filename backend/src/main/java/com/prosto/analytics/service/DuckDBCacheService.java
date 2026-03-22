@@ -18,6 +18,8 @@ import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.*;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
@@ -30,7 +32,8 @@ import java.util.concurrent.locks.ReentrantLock;
 public class DuckDBCacheService {
 
     private static final Logger log = LoggerFactory.getLogger(DuckDBCacheService.class);
-    private static final int FETCH_SIZE = 50_000;
+    private static final String DROP_IF_EXISTS = "DROP TABLE IF EXISTS ";
+    private static final String DUCKDB_DOUBLE = "DOUBLE";
 
     private record CacheEntry(
             String host, int port, String database, String schema, String tableName,
@@ -62,13 +65,17 @@ public class DuckDBCacheService {
             log.info("DuckDB cache initialized: {}", duckdbPath);
         } catch (Exception e) {
             log.warn("DuckDB cache file corrupt, recreating: {}", e.getMessage());
-            new File(duckdbPath).delete();
+            try {
+                Files.deleteIfExists(Path.of(duckdbPath));
+            } catch (IOException deleteEx) {
+                log.warn("Failed to delete corrupt DuckDB file: {}", deleteEx.getMessage());
+            }
             try {
                 masterConnection = openConnection();
                 log.info("DuckDB cache recreated: {}", duckdbPath);
             } catch (Exception ex) {
                 log.error("Failed to initialize DuckDB cache: {}", ex.getMessage(), ex);
-                throw new RuntimeException("DuckDB initialization failed", ex);
+                throw new IllegalStateException("DuckDB initialization failed", ex);
             }
         }
     }
@@ -99,7 +106,7 @@ public class DuckDBCacheService {
      */
     public String cacheTableName(String host, int port, String database, String schema, String tableName) {
         String raw = "cache_" + host + "_" + port + "_" + database + "_" + schema + "_" + tableName;
-        return raw.replaceAll("[^a-zA-Z0-9_]", "_");
+        return raw.replaceAll("\\W", "_");
     }
 
     public boolean isTableCached(String host, int port, String database, String schema, String tableName) {
@@ -165,7 +172,7 @@ public class DuckDBCacheService {
             writeLock.lock();
             try (var duckConn = masterConnection.duplicate();
                  Statement stmt = duckConn.createStatement()) {
-                stmt.execute("DROP TABLE IF EXISTS " + ident(duckTable));
+                stmt.execute(DROP_IF_EXISTS + ident(duckTable));
                 stmt.execute(createSql);
             } finally {
                 writeLock.unlock();
@@ -178,12 +185,10 @@ public class DuckDBCacheService {
 
             long rowCount = 0;
 
-            Connection pgConn = extJdbc.getDataSource().getConnection();
-            try {
+            try (Connection pgConn = extJdbc.getDataSource().getConnection()) {
                 BaseConnection basePgConn = pgConn.unwrap(BaseConnection.class);
                 CopyManager copyManager = new CopyManager(basePgConn);
 
-                // Pipe: PG COPY writes to OutputStream, we read from InputStream
                 var pis = new PipedInputStream(1024 * 1024);
                 var pos = new PipedOutputStream(pis);
 
@@ -192,7 +197,7 @@ public class DuckDBCacheService {
                         copyManager.copyOut(copySql, pos);
                         pos.close();
                     } catch (Exception e) {
-                        try { pos.close(); } catch (Exception ignored) {}
+                        closeSilently(pos);
                         log.error("COPY OUT failed: {}", e.getMessage());
                     }
                 });
@@ -202,10 +207,10 @@ public class DuckDBCacheService {
                      var duckConn = (DuckDBConnection) masterConnection.duplicate();
                      var appender = duckConn.createAppender(DuckDBConnection.DEFAULT_SCHEMA, duckTable)) {
 
-                    for (CSVRecord record : csvParser) {
+                    for (CSVRecord csvRow : csvParser) {
                         appender.beginRow();
                         for (int i = 0; i < fields.size(); i++) {
-                            String val = record.get(i);
+                            String val = csvRow.get(i);
                             appendTypedValue(appender, val, fields.get(i).type());
                         }
                         appender.endRow();
@@ -219,8 +224,6 @@ public class DuckDBCacheService {
                 }
 
                 copyThread.join();
-            } finally {
-                try { pgConn.close(); } catch (Exception ignored) {}
             }
 
             // 4. Store metadata
@@ -236,17 +239,19 @@ public class DuckDBCacheService {
             evictIfOverLimit();
 
         } catch (Exception e) {
-            // Cleanup partial table on failure
+            if (e instanceof InterruptedException) {
+                Thread.currentThread().interrupt();
+            }
             writeLock.lock();
             try (var conn = masterConnection.duplicate();
                  Statement stmt = conn.createStatement()) {
-                stmt.execute("DROP TABLE IF EXISTS " + ident(duckTable));
-            } catch (Exception dropEx) {
+                stmt.execute(DROP_IF_EXISTS + ident(duckTable));
+            } catch (SQLException dropEx) {
                 log.warn("Failed to drop partial cache table {}: {}", duckTable, dropEx.getMessage());
             } finally {
                 writeLock.unlock();
             }
-            throw new RuntimeException("Failed to cache " + schema + "." + tableName, e);
+            throw new IllegalStateException("Failed to cache " + schema + "." + tableName, e);
         }
     }
 
@@ -268,14 +273,14 @@ public class DuckDBCacheService {
         }
         try {
             switch (mapPgType(pgType)) {
-                case "INTEGER" -> appender.append(Integer.parseInt(val));
+                case "INTEGER", "SMALLINT" -> appender.append(Integer.parseInt(val));
                 case "BIGINT" -> appender.append(Long.parseLong(val));
-                case "SMALLINT" -> appender.append(Integer.parseInt(val));
-                case "DOUBLE", "FLOAT" -> appender.append(Double.parseDouble(val));
+                case DUCKDB_DOUBLE, "FLOAT" -> appender.append(Double.parseDouble(val));
                 case "BOOLEAN" -> appender.append(Boolean.parseBoolean(val));
                 default -> appender.append(val);
             }
-        } catch (NumberFormatException e) {
+        } catch (NumberFormatException nfe) {
+            log.trace("Cannot parse '{}' as {}: {}", val, pgType, nfe.getMessage());
             appender.append(val);
         }
     }
@@ -286,9 +291,9 @@ public class DuckDBCacheService {
             case "integer", "int4", "int", "serial" -> "INTEGER";
             case "bigint", "int8", "bigserial" -> "BIGINT";
             case "smallint", "int2" -> "SMALLINT";
-            case "numeric", "decimal" -> "DOUBLE";
+            case "numeric", "decimal" -> DUCKDB_DOUBLE;
             case "real", "float4" -> "FLOAT";
-            case "double precision", "float8" -> "DOUBLE";
+            case "double precision", "float8" -> DUCKDB_DOUBLE;
             case "boolean", "bool" -> "BOOLEAN";
             case "date" -> "DATE";
             default -> {
@@ -305,7 +310,7 @@ public class DuckDBCacheService {
             writeLock.lock();
             try (var conn = masterConnection.duplicate();
                  Statement stmt = conn.createStatement()) {
-                stmt.execute("DROP TABLE IF EXISTS " + ident(entry.duckTableName()));
+                stmt.execute(DROP_IF_EXISTS + ident(entry.duckTableName()));
                 log.info("Evicted cache: {}.{} (table: {})", schema, tableName, entry.duckTableName());
             } catch (Exception e) {
                 log.warn("Failed to drop cache table {}: {}", entry.duckTableName(), e.getMessage());
@@ -392,5 +397,13 @@ public class DuckDBCacheService {
 
     private String ident(String name) {
         return "\"" + name.replace("\"", "\"\"") + "\"";
+    }
+
+    private static void closeSilently(Closeable resource) {
+        try {
+            resource.close();
+        } catch (IOException e) {
+            log.trace("Failed to close resource: {}", e.getMessage());
+        }
     }
 }

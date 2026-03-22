@@ -30,16 +30,27 @@ public class ExportService {
         }
 
         List<String> valueColumns = new ArrayList<>(result.rows().getFirst().values().keySet());
-
-        var header = new ArrayList<String>();
         int keyCount = result.rows().getFirst().keys().size();
+
+        writeCsvHeader(writer, keyCount, valueColumns);
+        writeCsvRows(writer, result.rows(), valueColumns);
+        writeCsvTotals(writer, result, keyCount, valueColumns);
+
+        writer.flush();
+        return out.toByteArray();
+    }
+
+    private void writeCsvHeader(PrintWriter writer, int keyCount, List<String> valueColumns) {
+        var header = new ArrayList<String>();
         for (int i = 0; i < keyCount; i++) {
             header.add("Ключ " + (i + 1));
         }
         header.addAll(valueColumns);
         writer.println(String.join(";", header.stream().map(this::escapeCsv).toList()));
+    }
 
-        for (PivotResultRowDto row : result.rows()) {
+    private void writeCsvRows(PrintWriter writer, List<PivotResultRowDto> rows, List<String> valueColumns) {
+        for (PivotResultRowDto row : rows) {
             var line = new ArrayList<String>();
             for (String key : row.keys()) {
                 line.add(escapeCsv(key));
@@ -50,22 +61,21 @@ public class ExportService {
             }
             writer.println(String.join(";", line));
         }
+    }
 
-        if (result.totals() != null && !result.totals().isEmpty()) {
-            var totalsLine = new ArrayList<String>();
-            totalsLine.add(escapeCsv("ИТОГО"));
-            for (int i = 1; i < keyCount; i++) {
-                totalsLine.add("");
-            }
-            for (String col : valueColumns) {
-                Object val = result.totals().get(col);
-                totalsLine.add(val != null ? escapeCsv(String.valueOf(val)) : "");
-            }
-            writer.println(String.join(";", totalsLine));
+    private void writeCsvTotals(PrintWriter writer, PivotResultDto result, int keyCount, List<String> valueColumns) {
+        if (result.totals() == null || result.totals().isEmpty()) return;
+
+        var totalsLine = new ArrayList<String>();
+        totalsLine.add(escapeCsv("ИТОГО"));
+        for (int i = 1; i < keyCount; i++) {
+            totalsLine.add("");
         }
-
-        writer.flush();
-        return out.toByteArray();
+        for (String col : valueColumns) {
+            Object val = result.totals().get(col);
+            totalsLine.add(val != null ? escapeCsv(String.valueOf(val)) : "");
+        }
+        writer.println(String.join(";", totalsLine));
     }
 
     public byte[] exportExcel(PivotResultDto result) throws IOException {
@@ -83,63 +93,75 @@ public class ExportService {
             CellStyle numberStyle = createNumberStyle(workbook);
             CellStyle totalsStyle = createTotalsStyle(workbook);
 
-            Row headerRow = sheet.createRow(0);
-            int col = 0;
-            for (int i = 0; i < keyCount; i++) {
-                Cell cell = headerRow.createCell(col++);
-                cell.setCellValue("Ключ " + (i + 1));
-                cell.setCellStyle(headerStyle);
-            }
-            for (String valCol : valueColumns) {
-                Cell cell = headerRow.createCell(col++);
-                cell.setCellValue(valCol);
-                cell.setCellStyle(headerStyle);
-            }
+            writeExcelHeader(sheet, keyCount, valueColumns, headerStyle);
+            int rowIdx = writeExcelDataRows(sheet, result.rows(), valueColumns, numberStyle);
+            writeExcelTotals(sheet, result, keyCount, valueColumns, totalsStyle, rowIdx);
 
-            int rowIdx = 1;
-            for (PivotResultRowDto row : result.rows()) {
-                Row excelRow = sheet.createRow(rowIdx++);
-                col = 0;
-                for (String key : row.keys()) {
-                    excelRow.createCell(col++).setCellValue(key);
-                }
-                for (String valCol : valueColumns) {
-                    Object val = row.values().get(valCol);
-                    Cell cell = excelRow.createCell(col++);
-                    if (val instanceof Number n) {
-                        cell.setCellValue(n.doubleValue());
-                        cell.setCellStyle(numberStyle);
-                    } else if (val != null) {
-                        cell.setCellValue(val.toString());
-                    }
-                }
-            }
-
-            if (result.totals() != null && !result.totals().isEmpty()) {
-                Row totalsRow = sheet.createRow(rowIdx);
-                Cell labelCell = totalsRow.createCell(0);
-                labelCell.setCellValue("ИТОГО");
-                labelCell.setCellStyle(totalsStyle);
-
-                col = keyCount;
-                for (String valCol : valueColumns) {
-                    Object val = result.totals().get(valCol);
-                    Cell cell = totalsRow.createCell(col++);
-                    if (val instanceof Number n) {
-                        cell.setCellValue(n.doubleValue());
-                    } else if (val != null) {
-                        cell.setCellValue(val.toString());
-                    }
-                    cell.setCellStyle(totalsStyle);
-                }
-            }
-
-            sheet.setAutoFilter(new CellRangeAddress(0, 0, 0, keyCount + valueColumns.size() - 1));
-            for (int i = 0; i < keyCount + valueColumns.size(); i++) {
+            int totalCols = keyCount + valueColumns.size();
+            sheet.setAutoFilter(new CellRangeAddress(0, 0, 0, totalCols - 1));
+            for (int i = 0; i < totalCols; i++) {
                 sheet.autoSizeColumn(i);
             }
 
             return toBytes(workbook);
+        }
+    }
+
+    private void writeExcelHeader(Sheet sheet, int keyCount, List<String> valueColumns, CellStyle headerStyle) {
+        Row headerRow = sheet.createRow(0);
+        int col = 0;
+        for (int i = 0; i < keyCount; i++) {
+            Cell cell = headerRow.createCell(col++);
+            cell.setCellValue("Ключ " + (i + 1));
+            cell.setCellStyle(headerStyle);
+        }
+        for (String valCol : valueColumns) {
+            Cell cell = headerRow.createCell(col++);
+            cell.setCellValue(valCol);
+            cell.setCellStyle(headerStyle);
+        }
+    }
+
+    private int writeExcelDataRows(Sheet sheet, List<PivotResultRowDto> rows,
+                                   List<String> valueColumns, CellStyle numberStyle) {
+        int rowIdx = 1;
+        for (PivotResultRowDto row : rows) {
+            Row excelRow = sheet.createRow(rowIdx++);
+            int col = 0;
+            for (String key : row.keys()) {
+                excelRow.createCell(col++).setCellValue(key);
+            }
+            for (String valCol : valueColumns) {
+                Cell cell = excelRow.createCell(col++);
+                setCellValue(cell, row.values().get(valCol), numberStyle);
+            }
+        }
+        return rowIdx;
+    }
+
+    private void writeExcelTotals(Sheet sheet, PivotResultDto result, int keyCount,
+                                  List<String> valueColumns, CellStyle totalsStyle, int rowIdx) {
+        if (result.totals() == null || result.totals().isEmpty()) return;
+
+        Row totalsRow = sheet.createRow(rowIdx);
+        Cell labelCell = totalsRow.createCell(0);
+        labelCell.setCellValue("ИТОГО");
+        labelCell.setCellStyle(totalsStyle);
+
+        int col = keyCount;
+        for (String valCol : valueColumns) {
+            Cell cell = totalsRow.createCell(col++);
+            setCellValue(cell, result.totals().get(valCol), null);
+            cell.setCellStyle(totalsStyle);
+        }
+    }
+
+    private void setCellValue(Cell cell, Object val, CellStyle numberStyle) {
+        if (val instanceof Number n) {
+            cell.setCellValue(n.doubleValue());
+            if (numberStyle != null) cell.setCellStyle(numberStyle);
+        } else if (val != null) {
+            cell.setCellValue(val.toString());
         }
     }
 

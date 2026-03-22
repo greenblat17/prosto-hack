@@ -12,8 +12,8 @@ RUN ./gradlew bootJar --no-daemon -x test
 FROM eclipse-temurin:21-jre
 WORKDIR /app
 
-RUN groupadd -r app && useradd -r -g app app
-RUN mkdir -p /data && chown -R app:app /data
+RUN groupadd -r app && useradd -r -g app app \
+    && mkdir -p /data && chown -R app:app /data
 COPY --from=build /app/build/libs/*.jar app.jar
 RUN chown -R app:app /app
 

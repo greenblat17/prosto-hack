@@ -22,7 +22,7 @@ public class ConnectionService {
 
     private static final Logger log = LoggerFactory.getLogger(ConnectionService.class);
     private static final int MAX_CONNECTIONS_PER_USER = 3;
-    private static final long IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+    private static final long IDLE_TIMEOUT_MS = 30L * 60 * 1000;
 
     public record ConnectionInfo(String host, int port, String database, String username, String password) {}
 

@@ -74,12 +74,12 @@ public class ChatController {
         return FieldType.STRING;
     }
 
+    private static final String DIMENSION = "dimension";
+
     private static String categorize(FieldType type) {
         return switch (type) {
             case NUMBER -> "measure";
-            case STRING -> "dimension";
-            case DATE -> "dimension";
-            case BOOLEAN -> "dimension";
+            case STRING, DATE, BOOLEAN -> DIMENSION;
         };
     }
 }

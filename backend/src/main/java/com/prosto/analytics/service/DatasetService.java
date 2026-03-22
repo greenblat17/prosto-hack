@@ -139,12 +139,18 @@ public class DatasetService {
     }
 
     @Transactional
-    public DatasetInfoDto uploadFile(String name, MultipartFile file) throws Exception {
-        String originalName = file.getOriginalFilename();
-        if (originalName != null && (originalName.endsWith(".xlsx") || originalName.endsWith(".xls"))) {
-            return uploadXlsx(name, file);
+    public DatasetInfoDto uploadFile(String name, MultipartFile file) {
+        try {
+            String originalName = file.getOriginalFilename();
+            if (originalName != null && (originalName.endsWith(".xlsx") || originalName.endsWith(".xls"))) {
+                return uploadXlsx(name, file);
+            }
+            return uploadCsv(name, file);
+        } catch (RuntimeException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new IllegalStateException("Ошибка загрузки файла: " + e.getMessage(), e);
         }
-        return uploadCsv(name, file);
     }
 
     @Transactional
@@ -223,6 +229,7 @@ public class DatasetService {
                 try {
                     yield dataFormatter.formatCellValue(cell);
                 } catch (Exception e) {
+                    log.trace("Cannot evaluate formula cell: {}", e.getMessage());
                     yield "";
                 }
             }
@@ -250,8 +257,8 @@ public class DatasetService {
                 }
 
                 List<CSVRecord> sample = new ArrayList<>();
-                for (CSVRecord record : parser) {
-                    sample.add(record);
+                for (CSVRecord csvRow : parser) {
+                    sample.add(csvRow);
                     if (sample.size() >= SAMPLE_SIZE) break;
                 }
 
@@ -356,15 +363,13 @@ public class DatasetService {
         boolean allBoolean = true;
         int nonEmpty = 0;
 
-        for (CSVRecord record : sample) {
-            if (colIndex >= record.size()) continue;
-            String val = record.get(colIndex).trim();
+        for (CSVRecord csvRow : sample) {
+            String val = colIndex < csvRow.size() ? csvRow.get(colIndex).trim() : "";
             if (val.isEmpty()) continue;
             nonEmpty++;
-
-            if (allNumeric && !isNumeric(val)) allNumeric = false;
-            if (allDate && !isDate(val)) allDate = false;
-            if (allBoolean && !isBoolean(val)) allBoolean = false;
+            allNumeric = allNumeric && isNumeric(val);
+            allDate = allDate && isDate(val);
+            allBoolean = allBoolean && isBoolean(val);
         }
 
         if (nonEmpty == 0) return FieldType.STRING;
@@ -374,9 +379,14 @@ public class DatasetService {
         return FieldType.STRING;
     }
 
-    private boolean isNumeric(String val) {
-        try { Double.parseDouble(val.replace(",", ".")); return true; }
-        catch (NumberFormatException e) { return false; }
+    private static boolean isNumeric(String val) {
+        try {
+            Double.parseDouble(val.replace(",", "."));
+            return true;
+        } catch (NumberFormatException e) {
+            log.trace("Not numeric: {}", e.getMessage());
+            return false;
+        }
     }
 
     private boolean isDate(String val) {
@@ -413,7 +423,7 @@ public class DatasetService {
                 .toLowerCase()
                 .replaceAll("[^a-zA-Zа-яА-Я0-9_]", "_")
                 .replaceAll("_+", "_")
-                .replaceAll("^_|_$", "");
+                .replaceAll("(^_)|(_$)", "");
         return sanitized.isEmpty() ? "col" : sanitized;
     }
 

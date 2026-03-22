@@ -19,6 +19,8 @@ import java.util.UUID;
 @Service
 public class ChatSessionService {
 
+    private static final String USER_NOT_FOUND = "User not found";
+
     private final ChatSessionRepository sessionRepository;
     private final ChatMessageRepository messageRepository;
     private final DatasetRepository datasetRepository;
@@ -37,7 +39,7 @@ public class ChatSessionService {
     @Transactional(readOnly = true)
     public List<ChatSessionDto> listSessions(UUID datasetId, String userEmail) {
         User user = userRepository.findByEmail(userEmail)
-                .orElseThrow(() -> new NoSuchElementException("User not found"));
+                .orElseThrow(() -> new NoSuchElementException(USER_NOT_FOUND));
         return sessionRepository.findByDatasetIdAndUserIdOrderByUpdatedAtDesc(datasetId, user.getId())
                 .stream()
                 .map(s -> new ChatSessionDto(s.getId(), s.getDataset().getId(), s.getTitle(),
@@ -50,7 +52,7 @@ public class ChatSessionService {
         Dataset dataset = datasetRepository.findById(datasetId)
                 .orElseThrow(() -> new NoSuchElementException("Dataset not found: " + datasetId));
         User user = userRepository.findByEmail(userEmail)
-                .orElseThrow(() -> new NoSuchElementException("User not found"));
+                .orElseThrow(() -> new NoSuchElementException(USER_NOT_FOUND));
 
         ChatSession session = new ChatSession();
         session.setDataset(dataset);
@@ -64,7 +66,7 @@ public class ChatSessionService {
     @Transactional
     public void deleteSession(UUID sessionId, String userEmail) {
         User user = userRepository.findByEmail(userEmail)
-                .orElseThrow(() -> new NoSuchElementException("User not found"));
+                .orElseThrow(() -> new NoSuchElementException(USER_NOT_FOUND));
         ChatSession session = sessionRepository.findByIdAndUserId(sessionId, user.getId())
                 .orElseThrow(() -> new NoSuchElementException("Session not found"));
         sessionRepository.delete(session);
@@ -73,7 +75,7 @@ public class ChatSessionService {
     @Transactional(readOnly = true)
     public List<ChatMessageDto> getMessages(UUID sessionId, String userEmail) {
         User user = userRepository.findByEmail(userEmail)
-                .orElseThrow(() -> new NoSuchElementException("User not found"));
+                .orElseThrow(() -> new NoSuchElementException(USER_NOT_FOUND));
         sessionRepository.findByIdAndUserId(sessionId, user.getId())
                 .orElseThrow(() -> new NoSuchElementException("Session not found"));
         return messageRepository.findBySessionIdOrderByCreatedAtAsc(sessionId)
