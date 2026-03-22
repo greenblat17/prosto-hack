@@ -9,8 +9,6 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.util.Map;
-
 @RestController
 @RequestMapping("/api/auth")
 public class AuthController {
@@ -28,12 +26,7 @@ public class AuthController {
     }
 
     @PostMapping("/login")
-    public AuthResponseDto login(@Valid @RequestBody LoginRequestDto request) {
-        return authService.login(request.email(), request.password());
-    }
-
-    @ExceptionHandler(RuntimeException.class)
-    public ResponseEntity<Map<String, String>> handleRuntimeException(RuntimeException ex) {
-        return ResponseEntity.badRequest().body(Map.of("error", ex.getMessage()));
+    public ResponseEntity<AuthResponseDto> login(@Valid @RequestBody LoginRequestDto request) {
+        return ResponseEntity.ok(authService.login(request.email(), request.password()));
     }
 }

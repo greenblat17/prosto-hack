@@ -6,18 +6,20 @@ import tools.jackson.databind.node.ArrayNode;
 import tools.jackson.databind.node.ObjectNode;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.time.Duration;
+import java.util.Optional;
 
-public class GigaChatClient {
+public class AiClient {
 
     public record Message(String role, String content) {}
 
-    private static final Logger log = LoggerFactory.getLogger(GigaChatClient.class);
+    private static final Logger log = LoggerFactory.getLogger(AiClient.class);
+    private static final String CONTENT_FIELD = "content";
 
     private final String apiUrl;
     private final String apiKey;
@@ -25,8 +27,11 @@ public class GigaChatClient {
     private final double temperature;
     private final JsonMapper objectMapper;
     private final HttpClient httpClient;
+    private final Optional<String> httpReferer;
+    private final Optional<String> appTitle;
 
-    public GigaChatClient(String apiUrl, String apiKey, String model, double temperature, JsonMapper objectMapper) {
+    public AiClient(String apiUrl, String apiKey, String model, double temperature, JsonMapper objectMapper,
+                    String httpReferer, String appTitle) {
         this.apiUrl = apiUrl;
         this.apiKey = apiKey;
         this.model = model;
@@ -35,6 +40,8 @@ public class GigaChatClient {
         this.httpClient = HttpClient.newBuilder()
                 .connectTimeout(Duration.ofSeconds(10))
                 .build();
+        this.httpReferer = Optional.ofNullable(httpReferer).filter(s -> !s.isBlank());
+        this.appTitle = Optional.ofNullable(appTitle).filter(s -> !s.isBlank());
     }
 
     public String chatWithHistory(String systemPrompt, java.util.List<Message> history, String userPrompt) {
@@ -50,12 +57,12 @@ public class GigaChatClient {
                 if (attempt < maxRetries) {
                     try { Thread.sleep(1000L * attempt); } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
-                        throw new RuntimeException("AI запрос прерван", ie);
+                        throw new IllegalStateException("AI запрос прерван", ie);
                     }
                 }
             }
         }
-        throw new RuntimeException("AI не отвечает после " + maxRetries + " попыток", lastError);
+        throw new IllegalStateException("AI не отвечает после " + maxRetries + " попыток", lastError);
     }
 
     public String chat(String systemPrompt, String userPrompt) {
@@ -71,15 +78,16 @@ public class GigaChatClient {
                 if (attempt < maxRetries) {
                     try { Thread.sleep(1000L * attempt); } catch (InterruptedException ie) {
                         Thread.currentThread().interrupt();
-                        throw new RuntimeException("AI запрос прерван", ie);
+                        throw new IllegalStateException("AI запрос прерван", ie);
                     }
                 }
             }
         }
-        throw new RuntimeException("AI не отвечает после " + maxRetries + " попыток", lastError);
+        throw new IllegalStateException("AI не отвечает после " + maxRetries + " попыток", lastError);
     }
 
-    private String doChatWithHistory(String systemPrompt, java.util.List<Message> history, String userPrompt) throws Exception {
+    private String doChatWithHistory(String systemPrompt, java.util.List<Message> history, String userPrompt)
+            throws IOException, InterruptedException {
         ObjectNode body = objectMapper.createObjectNode();
         body.put("model", model);
         body.put("temperature", temperature);
@@ -88,37 +96,32 @@ public class GigaChatClient {
         if (systemPrompt != null && !systemPrompt.isBlank()) {
             ObjectNode sysMsg = messages.addObject();
             sysMsg.put("role", "system");
-            sysMsg.put("content", systemPrompt);
+            sysMsg.put(CONTENT_FIELD, systemPrompt);
         }
         for (Message m : history) {
             ObjectNode msg = messages.addObject();
             msg.put("role", m.role());
-            msg.put("content", m.content());
+            msg.put(CONTENT_FIELD, m.content());
         }
         ObjectNode userMsg = messages.addObject();
         userMsg.put("role", "user");
-        userMsg.put("content", userPrompt);
+        userMsg.put(CONTENT_FIELD, userPrompt);
 
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(apiUrl))
-                .header("Content-Type", "application/json")
-                .header("Authorization", "Bearer " + apiKey)
-                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
-                .timeout(Duration.ofSeconds(60))
-                .build();
+        HttpRequest request = buildChatRequest(objectMapper.writeValueAsString(body));
 
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
         if (response.statusCode() != 200) {
             log.error("AI API error: status={} body={}", response.statusCode(), response.body());
-            throw new RuntimeException("AI API error: " + response.statusCode());
+            throw new IllegalStateException("AI API error: " + response.statusCode());
         }
 
         JsonNode root = objectMapper.readTree(response.body());
-        return root.path("choices").path(0).path("message").path("content").asText();
+        return root.path("choices").path(0).path("message").path(CONTENT_FIELD).asText();
     }
 
-    private String doChat(String systemPrompt, String userPrompt) throws Exception {
+    private String doChat(String systemPrompt, String userPrompt)
+            throws IOException, InterruptedException {
         ObjectNode body = objectMapper.createObjectNode();
         body.put("model", model);
         body.put("temperature", temperature);
@@ -127,28 +130,34 @@ public class GigaChatClient {
         if (systemPrompt != null && !systemPrompt.isBlank()) {
             ObjectNode sysMsg = messages.addObject();
             sysMsg.put("role", "system");
-            sysMsg.put("content", systemPrompt);
+            sysMsg.put(CONTENT_FIELD, systemPrompt);
         }
         ObjectNode userMsg = messages.addObject();
         userMsg.put("role", "user");
-        userMsg.put("content", userPrompt);
+        userMsg.put(CONTENT_FIELD, userPrompt);
 
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(apiUrl))
-                .header("Content-Type", "application/json")
-                .header("Authorization", "Bearer " + apiKey)
-                .POST(HttpRequest.BodyPublishers.ofString(objectMapper.writeValueAsString(body)))
-                .timeout(Duration.ofSeconds(60))
-                .build();
+        HttpRequest request = buildChatRequest(objectMapper.writeValueAsString(body));
 
         HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
 
         if (response.statusCode() != 200) {
             log.error("AI API error: status={} body={}", response.statusCode(), response.body());
-            throw new RuntimeException("AI API error: " + response.statusCode());
+            throw new IllegalStateException("AI API error: " + response.statusCode());
         }
 
         JsonNode root = objectMapper.readTree(response.body());
-        return root.path("choices").path(0).path("message").path("content").asText();
+        return root.path("choices").path(0).path("message").path(CONTENT_FIELD).asText();
+    }
+
+    private HttpRequest buildChatRequest(String jsonBody) {
+        HttpRequest.Builder b = HttpRequest.newBuilder()
+                .uri(URI.create(apiUrl))
+                .header("Content-Type", "application/json")
+                .header("Authorization", "Bearer " + apiKey)
+                .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
+                .timeout(Duration.ofSeconds(60));
+        httpReferer.ifPresent(ref -> b.header("HTTP-Referer", ref));
+        appTitle.ifPresent(title -> b.header("X-OpenRouter-Title", title));
+        return b.build();
     }
 }

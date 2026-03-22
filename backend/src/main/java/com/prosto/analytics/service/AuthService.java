@@ -21,7 +21,7 @@ public class AuthService {
 
     public AuthResponseDto register(String email, String password) {
         if (userRepository.existsByEmail(email)) {
-            throw new RuntimeException("Email already taken");
+            throw new IllegalStateException("Email already taken");
         }
         User user = new User();
         user.setEmail(email);
@@ -33,9 +33,9 @@ public class AuthService {
 
     public AuthResponseDto login(String email, String password) {
         User user = userRepository.findByEmail(email)
-                .orElseThrow(() -> new RuntimeException("Invalid credentials"));
+                .orElseThrow(() -> new SecurityException("Invalid credentials"));
         if (!passwordEncoder.matches(password, user.getPasswordHash())) {
-            throw new RuntimeException("Invalid credentials");
+            throw new SecurityException("Invalid credentials");
         }
         String token = jwtService.generateToken(email);
         return new AuthResponseDto(token, email);

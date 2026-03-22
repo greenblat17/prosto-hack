@@ -13,12 +13,15 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 
 import java.util.List;
+import java.util.Set;
 import java.util.UUID;
 
 @Tag(name = "Datasets", description = "Управление датасетами — загрузка CSV, получение полей")
 @RestController
 @RequestMapping("/api/datasets")
 public class DatasetController {
+
+    private static final Set<String> ALLOWED_EXTENSIONS = Set.of("csv", "xlsx", "xls");
 
     private final DatasetService datasetService;
 
@@ -55,12 +58,23 @@ public class DatasetController {
     @PostMapping(value = "/upload", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<DatasetInfoDto> upload(
             @RequestParam("file") MultipartFile file,
-            @RequestParam(value = "name", required = false) String name) throws Exception {
+            @RequestParam(value = "name", required = false) String name) {
 
-        String datasetName = (name != null && !name.isBlank())
-                ? name
-                : file.getOriginalFilename();
+        if (file.isEmpty()) {
+            throw new IllegalArgumentException("Файл пустой");
+        }
 
+        String originalName = file.getOriginalFilename();
+        if (originalName != null) {
+            String ext = originalName.contains(".")
+                    ? originalName.substring(originalName.lastIndexOf('.') + 1).toLowerCase()
+                    : "";
+            if (!ALLOWED_EXTENSIONS.contains(ext)) {
+                throw new IllegalArgumentException("Неподдерживаемый формат файла. Допустимо: CSV, XLSX, XLS");
+            }
+        }
+
+        String datasetName = (name != null && !name.isBlank()) ? name : originalName;
         DatasetInfoDto result = datasetService.uploadFile(datasetName, file);
         return ResponseEntity.ok(result);
     }

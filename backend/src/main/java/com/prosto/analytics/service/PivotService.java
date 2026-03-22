@@ -26,15 +26,14 @@ import java.util.stream.Collectors;
 public class PivotService {
 
     private static final Logger log = LoggerFactory.getLogger(PivotService.class);
+    private static final String DATASET_NOT_FOUND = "Dataset not found: ";
 
     private final DatasetRepository datasetRepository;
     private final DatasetColumnRepository columnRepository;
     private final JdbcTemplate jdbcTemplate;
     private final PivotSqlBuilder sqlBuilder;
     private final DuckDBCacheService duckDBCacheService;
-
-    @Value("${app.pivot.max-result-rows:10000}")
-    private int maxResultRows;
+    private final int maxResultRows;
 
     private final Cache<String, PivotResultDto> resultCache = Caffeine.newBuilder()
             .maximumSize(500)
@@ -45,17 +44,19 @@ public class PivotService {
                         DatasetColumnRepository columnRepository,
                         JdbcTemplate jdbcTemplate,
                         PivotSqlBuilder sqlBuilder,
-                        DuckDBCacheService duckDBCacheService) {
+                        DuckDBCacheService duckDBCacheService,
+                        @Value("${app.pivot.max-result-rows:10000}") int maxResultRows) {
         this.datasetRepository = datasetRepository;
         this.columnRepository = columnRepository;
         this.jdbcTemplate = jdbcTemplate;
         this.sqlBuilder = sqlBuilder;
         this.duckDBCacheService = duckDBCacheService;
+        this.maxResultRows = maxResultRows;
     }
 
     public PivotResultDto execute(PivotExecuteRequestDto request) {
         Dataset dataset = datasetRepository.findById(request.datasetId())
-                .orElseThrow(() -> new NoSuchElementException("Dataset not found: " + request.datasetId()));
+                .orElseThrow(() -> new NoSuchElementException(DATASET_NOT_FOUND + request.datasetId()));
 
         List<DatasetColumn> columns = columnRepository.findByDatasetIdOrderByOrdinal(dataset.getId());
         Set<String> validColumns = columns.stream()
@@ -76,7 +77,7 @@ public class PivotService {
             }
         }
         int offset = Math.max(0, request.offset() != null ? request.offset() : 0);
-        int limit = Math.max(1, Math.min(request.limit() != null ? request.limit() : maxResultRows, maxResultRows));
+        int limit = Math.clamp(request.limit() != null ? request.limit() : maxResultRows, 1, maxResultRows);
 
         // Check cache
         String cacheKey = buildCacheKey(dataset.getTableName(), config, offset, limit);
@@ -146,7 +147,7 @@ public class PivotService {
         }
 
         int offset = Math.max(0, request.offset() != null ? request.offset() : 0);
-        int limit = Math.max(1, Math.min(request.limit() != null ? request.limit() : maxResultRows, maxResultRows));
+        int limit = Math.clamp(request.limit() != null ? request.limit() : maxResultRows, 1, maxResultRows);
 
         // Check cache
         String cacheKey = buildCacheKey(tableName, config, offset, limit);
@@ -188,8 +189,71 @@ public class PivotService {
 
     public String previewSql(PivotExecuteRequestDto request) {
         Dataset dataset = datasetRepository.findById(request.datasetId())
-                .orElseThrow(() -> new NoSuchElementException("Dataset not found: " + request.datasetId()));
+                .orElseThrow(() -> new NoSuchElementException(DATASET_NOT_FOUND + request.datasetId()));
         return sqlBuilder.buildPreviewSql(request.config(), dataset.getTableName());
+    }
+
+    private static final int EXPLAIN_LIMIT = 2000;
+
+    public PivotResultDto executeForExplain(UUID datasetId, PivotConfigDto config) {
+        Dataset dataset = datasetRepository.findById(datasetId)
+                .orElseThrow(() -> new NoSuchElementException(DATASET_NOT_FOUND + datasetId));
+
+        Set<String> validColumns = columnRepository.findByDatasetIdOrderByOrdinal(dataset.getId())
+                .stream().map(DatasetColumn::getColumnName).collect(Collectors.toSet());
+
+        var mainQuery = sqlBuilder.buildPivotQuery(config, dataset.getTableName(), validColumns, 0, EXPLAIN_LIMIT);
+        var totalsQuery = sqlBuilder.buildTotalsQuery(config, dataset.getTableName(), validColumns);
+
+        var mainFuture = CompletableFuture.supplyAsync(
+                () -> jdbcTemplate.queryForList(mainQuery.sql(), mainQuery.params().toArray()));
+        var totalsFuture = CompletableFuture.supplyAsync(
+                () -> jdbcTemplate.queryForList(totalsQuery.sql(), totalsQuery.params().toArray()));
+
+        CompletableFuture.allOf(mainFuture, totalsFuture).join();
+
+        return transformResult(mainFuture.join(), totalsFuture.join(), config,
+                dataset.getRowCount(), 0, EXPLAIN_LIMIT);
+    }
+
+    public PivotResultDto executeExternalForExplain(String connectionId, String schema, String tableName,
+                                                     PivotConfigDto config,
+                                                     ConnectionService connectionService, String userEmail) {
+        List<TableFieldDto> fields = connectionService.getTableFields(connectionId, schema, tableName, userEmail);
+        Set<String> validColumns = fields.stream().map(TableFieldDto::name).collect(Collectors.toSet());
+
+        ConnectionService.ConnectionInfo connInfo = connectionService.getConnectionInfo(connectionId, userEmail);
+        boolean useDuckDB = duckDBCacheService.isTableCached(
+                connInfo.host(), connInfo.port(), connInfo.database(), schema, tableName);
+
+        JdbcTemplate jdbc;
+        String qualifiedTable;
+        SqlDialect dialect;
+
+        if (useDuckDB) {
+            jdbc = duckDBCacheService.getDuckDBJdbc();
+            qualifiedTable = duckDBCacheService.cacheTableName(
+                    connInfo.host(), connInfo.port(), connInfo.database(), schema, tableName);
+            dialect = SqlDialect.DUCKDB;
+        } else {
+            jdbc = connectionService.getJdbc(connectionId, userEmail);
+            qualifiedTable = sqlBuilder.qualifiedTable(schema, tableName);
+            dialect = SqlDialect.POSTGRESQL;
+        }
+
+        var mainQuery = sqlBuilder.buildPivotQuery(config, qualifiedTable, validColumns, 0, EXPLAIN_LIMIT, dialect);
+        var totalsQuery = sqlBuilder.buildTotalsQuery(config, qualifiedTable, validColumns, dialect);
+
+        final JdbcTemplate finalJdbc = jdbc;
+        var mainFuture = CompletableFuture.supplyAsync(
+                () -> finalJdbc.queryForList(mainQuery.sql(), mainQuery.params().toArray()));
+        var totalsFuture = CompletableFuture.supplyAsync(
+                () -> finalJdbc.queryForList(totalsQuery.sql(), totalsQuery.params().toArray()));
+
+        CompletableFuture.allOf(mainFuture, totalsFuture).join();
+
+        long rowCount = connectionService.getTableRowCount(connectionId, schema, tableName, userEmail);
+        return transformResult(mainFuture.join(), totalsFuture.join(), config, rowCount, 0, EXPLAIN_LIMIT);
     }
 
     private PivotResultDto transformResult(List<Map<String, Object>> rawRows,
@@ -228,7 +292,7 @@ public class PivotService {
                     ? List.of("Итого")
                     : List.of(entry.getKey().split("\\|\\|\\|", -1));
 
-            Map<String, Object> values = buildValueMap(entry.getValue(), colKeys, colFieldIds, config.values());
+            Map<String, Object> values = buildValueMap(entry.getValue(), colFieldIds, config.values());
             resultRows.add(new PivotResultRowDto(keys, values, null));
         }
 
@@ -276,7 +340,6 @@ public class PivotService {
     }
 
     private Map<String, Object> buildValueMap(List<Map<String, Object>> groupRows,
-                                              List<String> colKeys,
                                               List<String> colFieldIds,
                                               List<PivotValueFieldDto> valueFields) {
         Map<String, Object> values = new LinkedHashMap<>();
@@ -339,7 +402,10 @@ public class PivotService {
         if (agg.returnsText()) {
             return val != null ? val.toString() : "";
         }
-        return toDouble(val);
+        if (val == null) return 0.0;
+        if (val instanceof Number n) return Math.round(n.doubleValue() * 100.0) / 100.0;
+        if (agg.requiresNumericColumn()) return toDouble(val);
+        return val.toString();
     }
 
     private String buildCacheKey(String tableName, PivotConfigDto config, int offset, int limit) {
@@ -349,6 +415,7 @@ public class PivotService {
             byte[] hash = md.digest(raw.getBytes(StandardCharsets.UTF_8));
             return HexFormat.of().formatHex(hash);
         } catch (Exception e) {
+            log.trace("SHA-256 unavailable, using hashCode: {}", e.getMessage());
             return tableName + "|" + config.hashCode() + "|" + offset + "|" + limit;
         }
     }
@@ -356,6 +423,11 @@ public class PivotService {
     private double toDouble(Object val) {
         if (val == null) return 0.0;
         if (val instanceof Number n) return Math.round(n.doubleValue() * 100.0) / 100.0;
-        try { return Double.parseDouble(val.toString()); } catch (NumberFormatException e) { return 0.0; }
+        try {
+            return Double.parseDouble(val.toString());
+        } catch (NumberFormatException e) {
+            log.trace("Cannot parse '{}' as double: {}", val, e.getMessage());
+            return 0.0;
+        }
     }
 }

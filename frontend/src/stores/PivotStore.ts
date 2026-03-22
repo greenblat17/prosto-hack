@@ -1,5 +1,10 @@
-import { types, type Instance } from 'mobx-state-tree'
+import { types, getRoot, type Instance } from 'mobx-state-tree'
 import type { AggregationType, PivotConfig, PivotZone, FilterOperator } from '@/types/pivot'
+
+let _filterUid = 0
+function nextFilterUid(): string {
+  return `flt-${++_filterUid}`
+}
 
 const PivotFieldModel = types.model('PivotField', {
   fieldId: types.string,
@@ -20,13 +25,15 @@ const PivotValueFieldModel = types.model('PivotValueField', {
     ]),
     'original'
   ),
+  fieldType: types.optional(types.string, 'string'),
 })
 
 const PivotFilterFieldModel = types.model('PivotFilterField', {
+  uid: types.optional(types.string, ''),
   fieldId: types.string,
   name: types.string,
   operator: types.optional(
-    types.enumeration<FilterOperator>(['eq', 'neq', 'gt', 'lt', 'in']),
+    types.enumeration<FilterOperator>(['eq', 'neq', 'gt', 'gte', 'lt', 'lte', 'in']),
     'eq'
   ),
   filterValue: types.optional(types.union(types.string, types.array(types.string)), ''),
@@ -70,10 +77,8 @@ export const PivotStore = types
     },
   }))
   .actions(self => ({
-    addField(zone: PivotZone, fieldId: string, name: string, _fieldType?: string) {
-      if (zone === 'filters') {
-        if (self.filters.some(f => f.fieldId === fieldId)) return
-      } else {
+    addField(zone: PivotZone, fieldId: string, name: string, fieldType?: string) {
+      if (zone !== 'filters') {
         if (self.isFieldUsed(fieldId)) return
       }
       switch (zone) {
@@ -85,11 +90,11 @@ export const PivotStore = types
           break
         case 'values': {
           const agg: AggregationType = 'original'
-          self.values.push({ fieldId, name, aggregation: agg })
+          self.values.push({ fieldId, name, aggregation: agg, fieldType: fieldType ?? 'string' })
           break
         }
         case 'filters':
-          self.filters.push({ fieldId, name, operator: 'eq', filterValue: '' })
+          self.filters.push({ uid: nextFilterUid(), fieldId, name, operator: 'eq', filterValue: '' })
           break
       }
     },
@@ -105,7 +110,7 @@ export const PivotStore = types
           self.values.replace(self.values.filter(f => f.fieldId !== fieldId))
           break
         case 'filters':
-          self.filters.replace(self.filters.filter(f => f.fieldId !== fieldId))
+          self.filters.replace(self.filters.filter(f => f.uid !== fieldId))
           break
       }
     },
@@ -129,23 +134,49 @@ export const PivotStore = types
       const field = self.values.find(f => f.fieldId === fieldId)
       if (field) field.aggregation = agg
     },
-    setFilter(fieldId: string, operator: FilterOperator, value: string | string[]) {
-      const field = self.filters.find(f => f.fieldId === fieldId)
+    setFilter(uid: string, operator: FilterOperator, value: string | string[]) {
+      const field = self.filters.find(f => f.uid === uid)
       if (field) {
         field.operator = operator
         field.filterValue = typeof value === 'string' ? value : (value as any)
       }
     },
     applyConfig(config: PivotConfig) {
-      self.rows.replace((config.rows ?? []) as any)
-      self.columns.replace((config.columns ?? []) as any)
+      let fieldNameMap: Record<string, string> = {}
+      let fieldTypeMap: Record<string, string> = {}
+      try {
+        const root = getRoot(self) as any
+        if (root.datasetStore?.fields) {
+          for (const f of root.datasetStore.fields) {
+            fieldNameMap[f.id] = f.name
+            fieldTypeMap[f.id] = f.type
+          }
+        }
+      } catch { /* root not available yet */ }
+
+      const resolveName = (fieldId: string, name?: string) =>
+        (name && name.trim()) ? name : (fieldNameMap[fieldId] ?? fieldId)
+
+      self.rows.replace((config.rows ?? []).map(f => ({
+        fieldId: f.fieldId,
+        name: resolveName(f.fieldId, f.name),
+      })) as any)
+      self.columns.replace((config.columns ?? []).map(f => ({
+        fieldId: f.fieldId,
+        name: resolveName(f.fieldId, f.name),
+      })) as any)
+
       const normalizedValues = (config.values ?? []).map(v => ({
-        ...v,
+        fieldId: v.fieldId,
+        name: resolveName(v.fieldId, v.name),
         aggregation: v.aggregation ?? 'original',
+        fieldType: fieldTypeMap[v.fieldId] ?? 'string',
       }))
       self.values.replace(normalizedValues as any)
       const normalizedFilters = (config.filters ?? []).map(f => ({
-        ...f,
+        fieldId: f.fieldId,
+        name: resolveName(f.fieldId, f.name),
+        uid: nextFilterUid(),
         filterValue: f.filterValue ?? '',
         operator: f.operator ?? 'eq',
       }))

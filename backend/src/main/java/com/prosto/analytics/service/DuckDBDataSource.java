@@ -32,16 +32,24 @@ public class DuckDBDataSource implements DataSource {
     }
 
     @Override
-    public PrintWriter getLogWriter() { return null; }
+    public PrintWriter getLogWriter() {
+        return null;
+    }
 
     @Override
-    public void setLogWriter(PrintWriter out) {}
+    public void setLogWriter(PrintWriter out) {
+        // DuckDB does not support log writers
+    }
 
     @Override
-    public void setLoginTimeout(int seconds) {}
+    public void setLoginTimeout(int seconds) {
+        // DuckDB connections are local, no network timeout needed
+    }
 
     @Override
-    public int getLoginTimeout() { return 0; }
+    public int getLoginTimeout() {
+        return 0;
+    }
 
     @Override
     public Logger getParentLogger() throws SQLFeatureNotSupportedException {

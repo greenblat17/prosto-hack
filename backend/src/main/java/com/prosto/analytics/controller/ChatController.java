@@ -44,14 +44,17 @@ public class ChatController {
                 .map(f -> new DatasetFieldDto(f.name(), f.name(), mapPgType(f.type()), categorize(mapPgType(f.type()))))
                 .toList();
 
-        return aiChatService.processExternalMessage(request.message(), fields);
+        long rowCount = connectionService.getTableRowCount(
+                request.connectionId(), request.schema(), request.tableName(), userEmail);
+
+        return aiChatService.processExternalMessage(request.message(), fields, rowCount);
     }
 
     @Operation(summary = "Объяснить таблицу",
-            description = "AI анализирует результаты сводной таблицы и даёт бизнес-выводы. Возвращает plain text.")
+            description = "AI выполняет pivot-запрос на сервере, считает статистику и даёт бизнес-выводы. Возвращает plain text.")
     @PostMapping(value = "/explain", produces = "text/plain")
-    public String explain(@RequestBody @Valid ExplainRequestDto request) {
-        return aiChatService.explainTable(request);
+    public String explain(@RequestBody @Valid ExplainRequestDto request, Authentication auth) {
+        return aiChatService.explainTable(request, connectionService, auth.getName());
     }
 
     private static FieldType mapPgType(String pgType) {
@@ -71,12 +74,12 @@ public class ChatController {
         return FieldType.STRING;
     }
 
+    private static final String DIMENSION = "dimension";
+
     private static String categorize(FieldType type) {
         return switch (type) {
             case NUMBER -> "measure";
-            case STRING -> "dimension";
-            case DATE -> "dimension";
-            case BOOLEAN -> "dimension";
+            case STRING, DATE, BOOLEAN -> DIMENSION;
         };
     }
 }

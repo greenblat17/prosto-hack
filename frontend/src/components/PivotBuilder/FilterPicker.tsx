@@ -6,7 +6,9 @@ const operators: { value: FilterOperator; label: string; symbol: string }[] = [
   { value: 'eq', label: 'Равно', symbol: '=' },
   { value: 'neq', label: 'Не равно', symbol: '≠' },
   { value: 'gt', label: 'Больше', symbol: '>' },
+  { value: 'gte', label: 'Больше или равно', symbol: '≥' },
   { value: 'lt', label: 'Меньше', symbol: '<' },
+  { value: 'lte', label: 'Меньше или равно', symbol: '≤' },
   { value: 'in', label: 'Содержит', symbol: '∈' },
 ]
 

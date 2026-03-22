@@ -1,7 +1,9 @@
 package com.prosto.analytics.dto;
 
+import jakarta.validation.constraints.NotBlank;
+
 public record PivotFieldDto(
-        String fieldId,
-        String name
+        @NotBlank String fieldId,
+        @NotBlank String name
 ) {
 }

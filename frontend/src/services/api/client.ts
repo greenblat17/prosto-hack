@@ -48,74 +48,131 @@ async function handleResponse<T>(res: Response): Promise<T> {
   return JSON.parse(text)
 }
 
-export async function get<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: authHeaders(),
-  })
-  return handleResponse<T>(res)
+export interface RequestOptions {
+  signal?: AbortSignal
+  timeoutMs?: number
 }
 
-export async function post<T>(path: string, body: unknown): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    method: 'POST',
-    headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(body),
-  })
-  return handleResponse<T>(res)
-}
-
-export async function postText(path: string, body: unknown): Promise<string> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    method: 'POST',
-    headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(body),
-  })
-  handleUnauthorized(res)
-  if (!res.ok) {
-    const text = await res.text()
-    throw new ApiError(res.status, text)
+function buildSignal(opts?: RequestOptions): AbortSignal | undefined {
+  if (!opts) return undefined
+  if (opts.signal && !opts.timeoutMs) return opts.signal
+  if (!opts.signal && opts.timeoutMs) return AbortSignal.timeout(opts.timeoutMs)
+  if (opts.signal && opts.timeoutMs) {
+    return AbortSignal.any([opts.signal, AbortSignal.timeout(opts.timeoutMs)])
   }
-  return res.text()
+  return undefined
 }
 
-export async function del<T>(path: string): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    method: 'DELETE',
-    headers: authHeaders(),
-  })
-  return handleResponse<T>(res)
+function wrapFetchError(e: unknown): never {
+  if (e instanceof DOMException && e.name === 'AbortError') {
+    throw new ApiError(0, 'Запрос отменён')
+  }
+  if (e instanceof DOMException && e.name === 'TimeoutError') {
+    throw new ApiError(0, 'Превышено время ожидания ответа от сервера')
+  }
+  throw e
 }
 
-export async function postFile<T>(path: string, file: File, name?: string): Promise<T> {
+export async function get<T>(path: string, opts?: RequestOptions): Promise<T> {
+  try {
+    const res = await fetch(`${BASE_URL}${path}`, {
+      headers: authHeaders(),
+      signal: buildSignal(opts),
+    })
+    return handleResponse<T>(res)
+  } catch (e) {
+    return wrapFetchError(e)
+  }
+}
+
+export async function post<T>(path: string, body: unknown, opts?: RequestOptions): Promise<T> {
+  try {
+    const res = await fetch(`${BASE_URL}${path}`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+      signal: buildSignal(opts),
+    })
+    return handleResponse<T>(res)
+  } catch (e) {
+    return wrapFetchError(e)
+  }
+}
+
+export async function postText(path: string, body: unknown, opts?: RequestOptions): Promise<string> {
+  try {
+    const res = await fetch(`${BASE_URL}${path}`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+      signal: buildSignal(opts),
+    })
+    handleUnauthorized(res)
+    if (!res.ok) {
+      const text = await res.text()
+      throw new ApiError(res.status, text)
+    }
+    return res.text()
+  } catch (e) {
+    if (e instanceof ApiError) throw e
+    return wrapFetchError(e)
+  }
+}
+
+export async function del<T>(path: string, opts?: RequestOptions): Promise<T> {
+  try {
+    const res = await fetch(`${BASE_URL}${path}`, {
+      method: 'DELETE',
+      headers: authHeaders(),
+      signal: buildSignal(opts),
+    })
+    return handleResponse<T>(res)
+  } catch (e) {
+    return wrapFetchError(e)
+  }
+}
+
+export async function postFile<T>(path: string, file: File, name?: string, opts?: RequestOptions): Promise<T> {
   const form = new FormData()
   form.append('file', file)
   if (name) form.append('name', name)
-  const res = await fetch(`${BASE_URL}${path}`, {
-    method: 'POST',
-    headers: authHeaders(),
-    body: form,
-  })
-  return handleResponse<T>(res)
+  try {
+    const res = await fetch(`${BASE_URL}${path}`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: form,
+      signal: buildSignal(opts),
+    })
+    return handleResponse<T>(res)
+  } catch (e) {
+    return wrapFetchError(e)
+  }
 }
 
-export async function postBlob(path: string, body: unknown, filename: string): Promise<void> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    method: 'POST',
-    headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(body),
-  })
-  handleUnauthorized(res)
-  if (!res.ok) {
-    const text = await res.text()
-    throw new ApiError(res.status, text)
+export async function postBlob(path: string, body: unknown, filename: string, opts?: RequestOptions): Promise<void> {
+  try {
+    const res = await fetch(`${BASE_URL}${path}`, {
+      method: 'POST',
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify(body),
+      signal: buildSignal(opts),
+    })
+    handleUnauthorized(res)
+    if (!res.ok) {
+      const text = await res.text()
+      throw new ApiError(res.status, text)
+    }
+    const blob = await res.blob()
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = filename
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    setTimeout(() => URL.revokeObjectURL(url), 1000)
+  } catch (e) {
+    if (e instanceof ApiError) throw e
+    return wrapFetchError(e)
   }
-  const blob = await res.blob()
-  const url = URL.createObjectURL(blob)
-  const a = document.createElement('a')
-  a.href = url
-  a.download = filename
-  document.body.appendChild(a)
-  a.click()
-  document.body.removeChild(a)
-  setTimeout(() => URL.revokeObjectURL(url), 1000)
 }

@@ -85,13 +85,27 @@ const shortLabels: Record<AggregationType, string> = {
   count_pct_col: '%# кол',
 }
 
+const numericOnly = new Set<AggregationType>([
+  'sum', 'int_sum', 'avg', 'median', 'min', 'max', 'variance', 'stddev',
+  'running_sum', 'sum_pct_total', 'sum_pct_row', 'sum_pct_col',
+])
+
 interface AggregationPickerProps {
   value: AggregationType
+  fieldType?: string
   onChange: (value: AggregationType) => void
 }
 
-export function AggregationPicker({ value, onChange }: AggregationPickerProps) {
+export function AggregationPicker({ value, fieldType, onChange }: AggregationPickerProps) {
   const [open, setOpen] = useState(false)
+  const isNumeric = fieldType === 'number'
+
+  const filteredGroups = groups
+    .map(group => ({
+      ...group,
+      options: group.options.filter(opt => isNumeric || !numericOnly.has(opt.value)),
+    }))
+    .filter(group => group.options.length > 0)
 
   return (
     <div className="relative">
@@ -106,7 +120,7 @@ export function AggregationPicker({ value, onChange }: AggregationPickerProps) {
         <>
           <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
           <div className="absolute left-0 top-full mt-1 z-50 bg-white rounded-lg border border-[#e2e8f0] shadow-xl py-1 min-w-[180px] max-h-[320px] overflow-y-auto animate-fade-in-up">
-            {groups.map((group, gi) => (
+            {filteredGroups.map((group, gi) => (
               <div key={gi}>
                 {gi > 0 && <div className="border-t border-[#f1f5f9] my-1" />}
                 <div className="px-3 pt-1.5 pb-0.5 text-[10px] font-semibold uppercase tracking-wider text-[#94a3b8]">

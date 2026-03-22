@@ -32,6 +32,19 @@ interface DiffItem {
   zone: string
 }
 
+const operatorSymbols: Record<string, string> = {
+  eq: '=', neq: '≠', gt: '>', gte: '≥', lt: '<', lte: '≤', in: '∈',
+}
+
+function filterLabel(f: any): string {
+  const name = fieldName(f)
+  const op = operatorSymbols[f.operator] ?? f.operator ?? ''
+  const val = Array.isArray(f.filterValue)
+    ? f.filterValue.join(', ')
+    : (f.filterValue || '')
+  return val ? `${name} ${op} ${val}` : name
+}
+
 function computeDiff(newConfig: PivotConfig, currentConfig: PivotConfig): DiffItem[] {
   const items: DiffItem[] = []
 
@@ -46,21 +59,38 @@ function computeDiff(newConfig: PivotConfig, currentConfig: PivotConfig): DiffIt
     const newFields = (newConfig[key] ?? []) as any[]
     const oldFields = (currentConfig[key] ?? []) as any[]
 
-    const newIds = new Set(newFields.map((f: any) => f.fieldId || f))
-    const oldIds = new Set(oldFields.map((f: any) => f.fieldId || f))
-
-    for (const f of newFields) {
-      const id = f.fieldId || f
-      if (!oldIds.has(id)) {
-        const agg = f.aggregation ? ` (${aggregationLabels[f.aggregation as AggregationType] ?? f.aggregation})` : ''
-        items.push({ type: 'add', label: `${fieldName(f)}${agg}`, zone: label })
+    if (key === 'filters') {
+      const oldKeys = new Set(oldFields.map((f: any) => `${f.fieldId}|${f.operator}|${f.filterValue}`))
+      for (const f of newFields) {
+        const k = `${f.fieldId}|${f.operator}|${f.filterValue}`
+        if (!oldKeys.has(k)) {
+          items.push({ type: 'add', label: filterLabel(f), zone: label })
+        }
       }
-    }
+      const newKeys = new Set(newFields.map((f: any) => `${f.fieldId}|${f.operator}|${f.filterValue}`))
+      for (const f of oldFields) {
+        const k = `${f.fieldId}|${f.operator}|${f.filterValue}`
+        if (!newKeys.has(k)) {
+          items.push({ type: 'remove', label: filterLabel(f), zone: label })
+        }
+      }
+    } else {
+      const newIds = new Set(newFields.map((f: any) => f.fieldId || f))
+      const oldIds = new Set(oldFields.map((f: any) => f.fieldId || f))
 
-    for (const f of oldFields) {
-      const id = f.fieldId || f
-      if (!newIds.has(id)) {
-        items.push({ type: 'remove', label: fieldName(f), zone: label })
+      for (const f of newFields) {
+        const id = f.fieldId || f
+        if (!oldIds.has(id)) {
+          const agg = f.aggregation ? ` (${aggregationLabels[f.aggregation as AggregationType] ?? f.aggregation})` : ''
+          items.push({ type: 'add', label: `${fieldName(f)}${agg}`, zone: label })
+        }
+      }
+
+      for (const f of oldFields) {
+        const id = f.fieldId || f
+        if (!newIds.has(id)) {
+          items.push({ type: 'remove', label: fieldName(f), zone: label })
+        }
       }
     }
   }
@@ -89,23 +119,39 @@ const ConfigDiff = observer(function ConfigDiff({ config, messageId, applied }: 
     )
   }
 
+  const grouped = new Map<string, DiffItem[]>()
+  for (const item of diff) {
+    const list = grouped.get(item.zone) ?? []
+    list.push(item)
+    grouped.set(item.zone, list)
+  }
+
   return (
     <div className="mt-2 rounded-lg border border-[#e2e8f0] bg-[#fafafa] px-3 py-2.5">
-      {diff.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 mb-2">
-          {diff.map((item, i) => (
-            <span
-              key={i}
-              className={cn(
-                "inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[12px] font-medium",
-                item.type === 'add'
-                  ? "bg-[#dcfce7] text-[#166534]"
-                  : "bg-[#fee2e2] text-[#991b1b]"
-              )}
-            >
-              {item.type === 'add' ? <Plus className="h-3 w-3" /> : <Minus className="h-3 w-3" />}
-              {item.label} → {item.zone}
-            </span>
+      {grouped.size > 0 && (
+        <div className="space-y-2 mb-2">
+          {[...grouped.entries()].map(([zone, items]) => (
+            <div key={zone}>
+              <div className="text-[11px] uppercase tracking-wider text-[#94a3b8] font-semibold mb-1">
+                {zone}
+              </div>
+              <div className="flex flex-wrap gap-1">
+                {items.map((item, i) => (
+                  <span
+                    key={i}
+                    className={cn(
+                      "inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[12px] font-medium",
+                      item.type === 'add'
+                        ? "bg-[#dcfce7] text-[#166534]"
+                        : "bg-[#fee2e2] text-[#991b1b]"
+                    )}
+                  >
+                    {item.type === 'add' ? <Plus className="h-2.5 w-2.5" /> : <Minus className="h-2.5 w-2.5" />}
+                    {item.label}
+                  </span>
+                ))}
+              </div>
+            </div>
           ))}
         </div>
       )}

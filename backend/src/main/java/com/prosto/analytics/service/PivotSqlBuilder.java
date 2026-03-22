@@ -39,6 +39,7 @@ public class PivotSqlBuilder {
         validate(config, validColumns);
 
         boolean allOriginal = isAllOriginal(config);
+        boolean duckdb = dialect == SqlDialect.DUCKDB;
 
         var sql = new StringBuilder();
         var params = new ArrayList<>();
@@ -62,12 +63,14 @@ public class PivotSqlBuilder {
             String alias = f.fieldId() + "_" + f.aggregation().getValue();
             String col = ident(f.fieldId());
             String expr;
-            if (f.aggregation() == AggregationType.ORIGINAL) {
+            if (f.aggregation() == AggregationType.ORIGINAL && !allOriginal) {
+                expr = duckdb ? "FIRST(" + col + ")" : "(ARRAY_AGG(" + col + "))[1]";
+            } else if (f.aggregation() == AggregationType.ORIGINAL) {
                 expr = col;
             } else if (!allOriginal && f.aggregation().isWindowFunction()) {
                 expr = buildWindowExpression(f.aggregation(), col, rowGroupBy, colGroupBy);
             } else {
-                expr = f.aggregation().toSqlExpression(col);
+                expr = f.aggregation().toSqlExpression(col, duckdb);
             }
             selectParts.add(expr + " AS " + ident(alias));
         }
@@ -133,6 +136,8 @@ public class PivotSqlBuilder {
             return new SqlQuery("SELECT 1 WHERE FALSE", new ArrayList<>());
         }
 
+        boolean duckdb = dialect == SqlDialect.DUCKDB;
+
         var sql = new StringBuilder();
         var params = new ArrayList<>();
         var selectParts = new ArrayList<String>();
@@ -145,7 +150,12 @@ public class PivotSqlBuilder {
         for (var f : config.values()) {
             String alias = f.fieldId() + "_" + f.aggregation().getValue();
             String col = ident(f.fieldId());
-            String expr = f.aggregation().baseSqlExpression(col);
+            String expr;
+            if (f.aggregation() == AggregationType.ORIGINAL) {
+                expr = duckdb ? "FIRST(" + col + ")" : "(ARRAY_AGG(" + col + "))[1]";
+            } else {
+                expr = f.aggregation().baseSqlExpression(col, duckdb);
+            }
             selectParts.add(expr + " AS " + ident(alias));
         }
 
@@ -180,8 +190,10 @@ public class PivotSqlBuilder {
             colNames.add(f.name());
         }
         for (var f : config.values()) {
-            if (f.aggregation() == AggregationType.ORIGINAL) {
+            if (f.aggregation() == AggregationType.ORIGINAL && allOriginal) {
                 selectParts.add("  " + f.name());
+            } else if (f.aggregation() == AggregationType.ORIGINAL) {
+                selectParts.add("  (ARRAY_AGG(" + f.name() + "))[1] AS \"" + f.name() + "\"");
             } else {
                 String aggLabel = f.aggregation().getDisplayLabel();
                 if (f.aggregation().isWindowFunction()) {
@@ -205,8 +217,10 @@ public class PivotSqlBuilder {
                 switch (f.operator()) {
                     case EQ -> whereParts.add(f.name() + " = '" + f.filterValue().getFirst() + "'");
                     case NEQ -> whereParts.add(f.name() + " != '" + f.filterValue().getFirst() + "'");
-                    case GT -> whereParts.add(f.name() + " > " + f.filterValue().getFirst());
-                    case LT -> whereParts.add(f.name() + " < " + f.filterValue().getFirst());
+                    case GT -> whereParts.add(f.name() + " > '" + f.filterValue().getFirst() + "'");
+                    case GTE -> whereParts.add(f.name() + " >= '" + f.filterValue().getFirst() + "'");
+                    case LT -> whereParts.add(f.name() + " < '" + f.filterValue().getFirst() + "'");
+                    case LTE -> whereParts.add(f.name() + " <= '" + f.filterValue().getFirst() + "'");
                     case IN -> {
                         String vals = f.filterValue().stream()
                                 .map(v -> "'" + v + "'")
@@ -306,11 +320,19 @@ public class PivotSqlBuilder {
                     params.add(f.filterValue().getFirst());
                 }
                 case GT -> {
-                    whereParts.add(ident(f.fieldId()) + " > " + dialect.castNumeric("?"));
+                    whereParts.add("CAST(" + ident(f.fieldId()) + " AS text) > " + dialect.castText("?"));
+                    params.add(f.filterValue().getFirst());
+                }
+                case GTE -> {
+                    whereParts.add("CAST(" + ident(f.fieldId()) + " AS text) >= " + dialect.castText("?"));
                     params.add(f.filterValue().getFirst());
                 }
                 case LT -> {
-                    whereParts.add(ident(f.fieldId()) + " < " + dialect.castNumeric("?"));
+                    whereParts.add("CAST(" + ident(f.fieldId()) + " AS text) < " + dialect.castText("?"));
+                    params.add(f.filterValue().getFirst());
+                }
+                case LTE -> {
+                    whereParts.add("CAST(" + ident(f.fieldId()) + " AS text) <= " + dialect.castText("?"));
                     params.add(f.filterValue().getFirst());
                 }
                 case IN -> {

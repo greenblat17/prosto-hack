@@ -22,7 +22,7 @@ public class ConnectionService {
 
     private static final Logger log = LoggerFactory.getLogger(ConnectionService.class);
     private static final int MAX_CONNECTIONS_PER_USER = 3;
-    private static final long IDLE_TIMEOUT_MS = 30 * 60 * 1000; // 30 minutes
+    private static final long IDLE_TIMEOUT_MS = 30L * 60 * 1000;
 
     public record ConnectionInfo(String host, int port, String database, String username, String password) {}
 
@@ -186,6 +186,14 @@ public class ConnectionService {
         if (!conn.ownerEmail().equals(userEmail)) {
             throw new SecurityException("Нет доступа к этому подключению");
         }
+    }
+
+    public long getTableRowCount(String connectionId, String schema, String table, String userEmail) {
+        JdbcTemplate jdbc = getJdbc(connectionId, userEmail);
+        String sql = "SELECT reltuples::bigint FROM pg_class c JOIN pg_namespace n ON c.relnamespace = n.oid " +
+                "WHERE n.nspname = ? AND c.relname = ?";
+        Long count = jdbc.queryForObject(sql, Long.class, schema, table);
+        return count != null && count >= 0 ? count : 0;
     }
 
     public ConnectionInfo getConnectionInfo(String connectionId, String userEmail) {

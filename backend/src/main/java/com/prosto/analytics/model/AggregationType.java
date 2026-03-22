@@ -46,31 +46,49 @@ public enum AggregationType {
     }
 
     public String toSqlExpression(String column) {
+        return toSqlExpression(column, false);
+    }
+
+    public String toSqlExpression(String column, boolean duckdb) {
         return switch (this) {
             case ORIGINAL -> column;
             case COUNT -> "COUNT(" + column + ")";
             case COUNT_DISTINCT -> "COUNT(DISTINCT " + column + ")";
-            case LIST_DISTINCT -> "STRING_AGG(DISTINCT " + column + "::text, ', ' ORDER BY " + column + "::text)";
+            case LIST_DISTINCT -> duckdb
+                    ? "STRING_AGG(DISTINCT CAST(" + column + " AS VARCHAR), ', ')"
+                    : "STRING_AGG(DISTINCT " + column + "::text, ', ' ORDER BY " + column + "::text)";
             case SUM -> "SUM(" + column + ")";
-            case INT_SUM -> "SUM(" + column + ")::BIGINT";
+            case INT_SUM -> duckdb
+                    ? "CAST(SUM(" + column + ") AS BIGINT)"
+                    : "SUM(" + column + ")::BIGINT";
             case AVG -> "AVG(" + column + ")";
-            case MEDIAN -> "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY " + column + ")";
+            case MEDIAN -> duckdb
+                    ? "MEDIAN(" + column + ")"
+                    : "PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY " + column + ")";
             case VARIANCE -> "VAR_SAMP(" + column + ")";
             case STDDEV -> "STDDEV_SAMP(" + column + ")";
             case MIN -> "MIN(" + column + ")";
             case MAX -> "MAX(" + column + ")";
-            case FIRST -> "(ARRAY_AGG(" + column + "))[1]";
-            case LAST -> "(ARRAY_AGG(" + column + "))[array_length(ARRAY_AGG(" + column + "), 1)]";
+            case FIRST -> duckdb
+                    ? "FIRST(" + column + ")"
+                    : "(ARRAY_AGG(" + column + "))[1]";
+            case LAST -> duckdb
+                    ? "LAST(" + column + ")"
+                    : "(ARRAY_AGG(" + column + " ORDER BY " + column + " DESC))[1]";
             case RUNNING_SUM, SUM_PCT_TOTAL, SUM_PCT_ROW, SUM_PCT_COL -> "SUM(" + column + ")";
             case COUNT_PCT_TOTAL, COUNT_PCT_ROW, COUNT_PCT_COL -> "COUNT(" + column + ")";
         };
     }
 
     public String baseSqlExpression(String column) {
+        return baseSqlExpression(column, false);
+    }
+
+    public String baseSqlExpression(String column, boolean duckdb) {
         return switch (this) {
             case RUNNING_SUM, SUM_PCT_TOTAL, SUM_PCT_ROW, SUM_PCT_COL -> "SUM(" + column + ")";
             case COUNT_PCT_TOTAL, COUNT_PCT_ROW, COUNT_PCT_COL -> "COUNT(" + column + ")";
-            default -> toSqlExpression(column);
+            default -> toSqlExpression(column, duckdb);
         };
     }
 

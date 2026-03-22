@@ -16,6 +16,8 @@ spring:
     hikari:
       maximum-pool-size: 20
       minimum-idle: 5
+      data-source-properties:
+        statement_timeout: 30000
 
   jpa:
     hibernate:
@@ -38,8 +40,11 @@ spring:
 ai:
   api-url: ${AI_API_URL:https://openrouter.ai/api/v1/chat/completions}
   api-key: ${AI_API_KEY:}
-  model: ${AI_MODEL:google/gemini-2.0-flash-lite-001}
+  model: ${AI_MODEL:anthropic/claude-sonnet-4}
   temperature: 0.2
+  # OpenRouter рекомендует заголовки атрибуции; без них иногда 403 или пустой content
+  http-referer: ${AI_HTTP_REFERER:http://localhost:3000}
+  app-title: ${AI_APP_TITLE:Prosto Analytics}
 
 springdoc:
   api-docs:
@@ -48,6 +53,10 @@ springdoc:
     path: /swagger-ui.html
     tags-sorter: alpha
     operations-sorter: method
+
+logging:
+  level:
+    com.prosto.analytics.service.AiChatService: DEBUG
 
 management:
   endpoints:
