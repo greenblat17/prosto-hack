@@ -44,7 +44,7 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:5173,http://localhost:3000}
       DUCKDB_PATH: /data/duckdb-cache.duckdb
       DUCKDB_MAX_DISK_GB: "10"
-      DUCKDB_TTL_MINUTES: "120"
+      DUCKDB_TTL_MINUTES: "1440"
     depends_on:
       postgres:
         condition: service_healthy
