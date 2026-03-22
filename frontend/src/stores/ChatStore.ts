@@ -1,6 +1,7 @@
 import { types, getRoot, flow, type Instance } from 'mobx-state-tree'
 import {
   sendMessage as sendMessageApi,
+  sendExternalMessage as sendExternalMessageApi,
   explainTable as explainTableApi,
   fetchSessions as fetchSessionsApi,
   createSession as createSessionApi,
@@ -54,7 +55,10 @@ export const ChatStore = types
     createSession: flow(function* () {
       const root = getRoot(self) as any
       const datasetId = root.datasetStore.currentDatasetId
-      if (!datasetId) return
+      if (!datasetId) {
+        self.messages.clear()
+        return
+      }
 
       const session: ChatSession = yield createSessionApi(datasetId)
       self.sessions.unshift(session)
@@ -110,9 +114,12 @@ export const ChatStore = types
     sendMessage: flow(function* (text: string) {
       const root = getRoot(self) as any
       const datasetId = root.datasetStore.currentDatasetId
-      if (!datasetId) return
+      const conn = root.connectionStore
 
-      if (!self.currentSessionId) {
+      const isExternal = !datasetId && conn.isConnected && conn.connectionId
+      if (!datasetId && !isExternal) return
+
+      if (datasetId && !self.currentSessionId) {
         const session: ChatSession = yield createSessionApi(datasetId)
         self.sessions.unshift(session)
         self.currentSessionId = session.id
@@ -132,11 +139,22 @@ export const ChatStore = types
       self.loading = true
 
       try {
-        const response: Awaited<ReturnType<typeof sendMessageApi>> =
-          yield sendMessageApi(text, datasetId, self.currentSessionId ?? undefined, {
+        let response: Awaited<ReturnType<typeof sendMessageApi>>
+
+        if (isExternal) {
+          response = yield sendExternalMessageApi(
+            text,
+            conn.connectionId,
+            conn.selectedSchema,
+            conn.selectedTable,
+            { signal: ac.signal, timeoutMs: CHAT_TIMEOUT_MS },
+          )
+        } else {
+          response = yield sendMessageApi(text, datasetId!, self.currentSessionId ?? undefined, {
             signal: ac.signal,
             timeoutMs: CHAT_TIMEOUT_MS,
           })
+        }
 
         const assistantMsg = {
           id: `msg-${Date.now()}-ai`,

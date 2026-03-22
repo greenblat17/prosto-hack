@@ -11,6 +11,16 @@ export function sendMessage(message: string, datasetId: string, sessionId?: stri
   return post('/api/chat/message', { message, datasetId, sessionId }, opts)
 }
 
+export function sendExternalMessage(
+  message: string,
+  connectionId: string,
+  schema: string,
+  tableName: string,
+  opts?: RequestOptions,
+): Promise<ChatResponse> {
+  return post('/api/chat/external/message', { message, connectionId, schema, tableName }, opts)
+}
+
 export interface ExplainRequest {
   config: PivotConfig
   datasetId?: string
