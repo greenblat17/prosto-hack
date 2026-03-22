@@ -19,7 +19,6 @@ const groups: AggGroup[] = [
       { value: 'original', label: 'Оригинал' },
       { value: 'count', label: 'Количество' },
       { value: 'count_distinct', label: 'Кол-во уникальных' },
-      { value: 'list_distinct', label: 'Список уникальных' },
     ],
   },
   {
