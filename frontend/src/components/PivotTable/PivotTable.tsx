@@ -329,7 +329,21 @@ export const PivotTable = observer(function PivotTable() {
                     colSpan={rowFieldNames.length}
                     className="py-3 px-4 text-[#334155]"
                   >
-                    Итого
+                    {(() => {
+                      const aggs = pivotStore.values.map((v: any) => v.aggregation)
+                      const uniqueAggs = [...new Set(aggs)] as string[]
+                      const labels: Record<string, string> = {
+                        sum: 'Сумма', avg: 'Среднее', count: 'Количество',
+                        min: 'Минимум', max: 'Максимум', original: 'Значение',
+                        sum_pct_total: '% от общего', sum_pct_row: '% по строке',
+                        sum_pct_col: '% по столбцу', running_sum: 'Нарастающий итог',
+                        count_pct_total: '% количества',
+                      }
+                      const aggLabel = uniqueAggs.length === 1
+                        ? labels[uniqueAggs[0]] ?? uniqueAggs[0]
+                        : uniqueAggs.map(a => labels[a] ?? a).join(', ')
+                      return `Итого (${aggLabel})`
+                    })()}
                   </td>
                   {valueColumns.map((col, i) => {
                     const val = data.totals[col]
