@@ -24,7 +24,7 @@ public class ConnectionService {
     private static final int MAX_CONNECTIONS_PER_USER = 3;
     private static final long IDLE_TIMEOUT_MS = 30L * 60 * 1000;
 
-    public record ConnectionInfo(String host, int port, String database, String username, String password) {}
+    public record ConnectionInfo(String host, int port, String database) {}
 
     private record PooledConnection(HikariDataSource dataSource, JdbcTemplate jdbcTemplate,
                                      String ownerEmail, String name, String host, int port,
@@ -202,7 +202,7 @@ public class ConnectionService {
             throw new NoSuchElementException("Connection not found: " + connectionId);
         }
         validateOwner(conn, userEmail);
-        return new ConnectionInfo(conn.host(), conn.port(), conn.database(), conn.username(), conn.password());
+        return new ConnectionInfo(conn.host(), conn.port(), conn.database());
     }
 
     private void touchConnection(String connectionId, PooledConnection conn) {
