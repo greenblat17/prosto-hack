@@ -431,22 +431,46 @@ public class AiChatService {
         return dump;
     }
 
+    private static String resolveFieldName(String fieldId, String name, Map<String, String> fieldNameMap) {
+        if (name != null && !name.isBlank()) return name;
+        return fieldNameMap.getOrDefault(fieldId, fieldId);
+    }
+
+    private static List<PivotFieldDto> sanitizeFields(List<PivotFieldDto> src, Map<String, String> fieldNameMap) {
+        if (src == null) return List.of();
+        return src.stream()
+                .filter(f -> f.fieldId() != null && !f.fieldId().isBlank())
+                .map(f -> new PivotFieldDto(f.fieldId(), resolveFieldName(f.fieldId(), f.name(), fieldNameMap)))
+                .toList();
+    }
+
     private ChatResponseDto sanitizeResponse(ChatResponseDto response, List<DatasetFieldDto> fields) {
         if (response.config() == null) return response;
 
         var config = response.config();
+        var fieldNameMap = fields.stream()
+                .collect(Collectors.toMap(DatasetFieldDto::id, DatasetFieldDto::name, (a, b) -> a));
 
-        // Fix null filterValues
         var filters = config.filters() == null ? List.<PivotFilterFieldDto>of() :
-                config.filters().stream().map(f -> new PivotFilterFieldDto(
-                        f.fieldId(), f.name(),
-                        f.operator() != null ? f.operator() : com.prosto.analytics.model.FilterOperator.EQ,
-                        f.filterValue() != null ? f.filterValue() : List.of()
-                )).toList();
+                config.filters().stream()
+                        .filter(f -> f.fieldId() != null && !f.fieldId().isBlank())
+                        .map(f -> new PivotFilterFieldDto(
+                                f.fieldId(),
+                                resolveFieldName(f.fieldId(), f.name(), fieldNameMap),
+                                f.operator() != null ? f.operator() : com.prosto.analytics.model.FilterOperator.EQ,
+                                f.filterValue() != null ? f.filterValue() : List.of()
+                        )).toList();
 
-        var rows = config.rows() == null ? List.<PivotFieldDto>of() : config.rows();
-        var columns = config.columns() == null ? List.<PivotFieldDto>of() : config.columns();
-        var values = config.values() == null ? List.<PivotValueFieldDto>of() : config.values();
+        var rows = sanitizeFields(config.rows(), fieldNameMap);
+        var columns = sanitizeFields(config.columns(), fieldNameMap);
+        var values = config.values() == null ? List.<PivotValueFieldDto>of() :
+                config.values().stream()
+                        .filter(v -> v.fieldId() != null && !v.fieldId().isBlank())
+                        .map(v -> new PivotValueFieldDto(
+                                v.fieldId(),
+                                resolveFieldName(v.fieldId(), v.name(), fieldNameMap),
+                                v.aggregation() != null ? v.aggregation() : com.prosto.analytics.model.AggregationType.ORIGINAL
+                        )).toList();
 
         // Ensure at least one value field
         if (values.isEmpty()) {

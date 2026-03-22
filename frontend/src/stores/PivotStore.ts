@@ -142,27 +142,40 @@ export const PivotStore = types
       }
     },
     applyConfig(config: PivotConfig) {
-      self.rows.replace((config.rows ?? []) as any)
-      self.columns.replace((config.columns ?? []) as any)
-
+      let fieldNameMap: Record<string, string> = {}
       let fieldTypeMap: Record<string, string> = {}
       try {
         const root = getRoot(self) as any
         if (root.datasetStore?.fields) {
           for (const f of root.datasetStore.fields) {
+            fieldNameMap[f.id] = f.name
             fieldTypeMap[f.id] = f.type
           }
         }
       } catch { /* root not available yet */ }
 
+      const resolveName = (fieldId: string, name?: string) =>
+        (name && name.trim()) ? name : (fieldNameMap[fieldId] ?? fieldId)
+
+      self.rows.replace((config.rows ?? []).map(f => ({
+        fieldId: f.fieldId,
+        name: resolveName(f.fieldId, f.name),
+      })) as any)
+      self.columns.replace((config.columns ?? []).map(f => ({
+        fieldId: f.fieldId,
+        name: resolveName(f.fieldId, f.name),
+      })) as any)
+
       const normalizedValues = (config.values ?? []).map(v => ({
-        ...v,
+        fieldId: v.fieldId,
+        name: resolveName(v.fieldId, v.name),
         aggregation: v.aggregation ?? 'original',
         fieldType: fieldTypeMap[v.fieldId] ?? 'string',
       }))
       self.values.replace(normalizedValues as any)
       const normalizedFilters = (config.filters ?? []).map(f => ({
-        ...f,
+        fieldId: f.fieldId,
+        name: resolveName(f.fieldId, f.name),
         uid: nextFilterUid(),
         filterValue: f.filterValue ?? '',
         operator: f.operator ?? 'eq',
