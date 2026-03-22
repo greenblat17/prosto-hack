@@ -190,7 +190,7 @@ const CenterPanel = observer(function CenterPanel({ chatOpen, onToggleChat, fiel
 })
 
 const DashboardPage = observer(function DashboardPage() {
-  const { pivotStore, resultStore, datasetStore } = useStore()
+  const { pivotStore, resultStore, datasetStore, chatStore } = useStore()
   const { datasetId } = useParams<{ datasetId: string }>()
   const [fullscreen, _setFullscreen] = useState(false)
   const [fieldsOpen, setFieldsOpen] = useState(true)
@@ -209,6 +209,10 @@ const DashboardPage = observer(function DashboardPage() {
     const load = async () => {
       try {
         if (datasetStore.currentDatasetId !== datasetId) {
+          // Reset stores when switching datasets
+          pivotStore.clear()
+          resultStore.setData(null)
+          chatStore.resetForDataset()
           await datasetStore.openDataset(datasetId)
         }
         // Apply shared config if present
@@ -223,7 +227,15 @@ const DashboardPage = observer(function DashboardPage() {
       }
     }
     load()
-  }, [datasetId, searchParams, datasetStore, pivotStore, resultStore])
+
+    // Cleanup on unmount (navigating away from dashboard)
+    return () => {
+      pivotStore.clear()
+      resultStore.setData(null)
+      chatStore.resetForDataset()
+      datasetStore.resetData()
+    }
+  }, [datasetId, searchParams, datasetStore, pivotStore, resultStore, chatStore])
 
   if (!datasetId) {
     return <Navigate to="/dashboards" replace />
@@ -329,7 +341,7 @@ function NotFoundPage() {
 }
 
 const ExternalDashboardPage = observer(function ExternalDashboardPage() {
-  const { pivotStore, resultStore, datasetStore, connectionStore } = useStore()
+  const { pivotStore, resultStore, datasetStore, connectionStore, chatStore } = useStore()
   const { connectionId } = useParams<{ connectionId: string }>()
   const navigate = useNavigate()
   const [fullscreen, _setFullscreen] = useState(false)
@@ -346,13 +358,21 @@ const ExternalDashboardPage = observer(function ExternalDashboardPage() {
     if (!connectionStore.isConnected || connectionStore.connectionId !== connectionId) {
       navigate('/dashboards')
     }
-  }, [connectionId, connectionStore.isConnected, connectionStore.connectionId, navigate])
+
+    // Cleanup on unmount (navigating away from external dashboard)
+    return () => {
+      pivotStore.clear()
+      resultStore.setData(null)
+      chatStore.resetForDataset()
+    }
+  }, [connectionId, connectionStore.isConnected, connectionStore.connectionId, navigate, pivotStore, resultStore, chatStore])
 
   if (!connectionStore.isConnected) return <LoadingPage />
 
   const handleTableSelected = (schema: string, table: string, fields: any[]) => {
     pivotStore.clear()
     resultStore.setData(null)
+    chatStore.resetForDataset()
     datasetStore.setExternalFields(fields, `${schema}.${table}`)
     connectionStore.selectTable(schema, table)
   }

@@ -105,6 +105,7 @@ export const DatasetStore = types
     resetData() {
       self.dataLoaded = false
       self.currentDatasetId = null
+      self.currentDatasetName = ''
     },
     setSearchQuery(q: string) {
       self.searchQuery = q

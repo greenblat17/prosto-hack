@@ -46,6 +46,7 @@ export function ChartView({ data, mode }: ChartViewProps) {
               axisLine={{ stroke: '#e2e8f0' }}
             />
             <YAxis
+              domain={['auto', 'auto']}
               tick={{ fontSize: 12, fill: '#64748b' }}
               tickLine={false}
               axisLine={{ stroke: '#e2e8f0' }}
@@ -85,6 +86,7 @@ export function ChartView({ data, mode }: ChartViewProps) {
               axisLine={{ stroke: '#e2e8f0' }}
             />
             <YAxis
+              domain={['auto', 'auto']}
               tick={{ fontSize: 12, fill: '#64748b' }}
               tickLine={false}
               axisLine={{ stroke: '#e2e8f0' }}
