@@ -171,6 +171,7 @@ public class PivotSqlBuilder {
         return new SqlQuery(sql.toString(), params);
     }
 
+    /** Display-only SQL for UI preview — never executed against database. */
     public String buildPreviewSql(PivotConfigDto config, String tableName) {
         boolean allOriginal = isAllOriginal(config);
 
@@ -214,18 +215,19 @@ public class PivotSqlBuilder {
             var whereParts = new ArrayList<String>();
             for (var f : config.filters()) {
                 if (f.filterValue() == null || f.filterValue().isEmpty()) continue;
+                String col = ident(f.fieldId());
                 switch (f.operator()) {
-                    case EQ -> whereParts.add(f.name() + " = '" + f.filterValue().getFirst() + "'");
-                    case NEQ -> whereParts.add(f.name() + " != '" + f.filterValue().getFirst() + "'");
-                    case GT -> whereParts.add(f.name() + " > '" + f.filterValue().getFirst() + "'");
-                    case GTE -> whereParts.add(f.name() + " >= '" + f.filterValue().getFirst() + "'");
-                    case LT -> whereParts.add(f.name() + " < '" + f.filterValue().getFirst() + "'");
-                    case LTE -> whereParts.add(f.name() + " <= '" + f.filterValue().getFirst() + "'");
+                    case EQ -> whereParts.add(col + " = '" + escapeSql(f.filterValue().getFirst()) + "'");
+                    case NEQ -> whereParts.add(col + " != '" + escapeSql(f.filterValue().getFirst()) + "'");
+                    case GT -> whereParts.add(col + " > '" + escapeSql(f.filterValue().getFirst()) + "'");
+                    case GTE -> whereParts.add(col + " >= '" + escapeSql(f.filterValue().getFirst()) + "'");
+                    case LT -> whereParts.add(col + " < '" + escapeSql(f.filterValue().getFirst()) + "'");
+                    case LTE -> whereParts.add(col + " <= '" + escapeSql(f.filterValue().getFirst()) + "'");
                     case IN -> {
                         String vals = f.filterValue().stream()
-                                .map(v -> "'" + v + "'")
+                                .map(v -> "'" + escapeSql(v) + "'")
                                 .collect(Collectors.joining(", "));
-                        whereParts.add(f.name() + " IN (" + vals + ")");
+                        whereParts.add(col + " IN (" + vals + ")");
                     }
                 }
             }
@@ -381,6 +383,10 @@ public class PivotSqlBuilder {
             return tableName;
         }
         return ident(tableName);
+    }
+
+    private String escapeSql(String value) {
+        return value == null ? "" : value.replace("'", "''");
     }
 
     private String ident(String name) {
