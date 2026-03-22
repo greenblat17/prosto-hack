@@ -4,6 +4,7 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { useStore } from '@/stores/RootStore'
 import { cn } from '@/lib/utils'
 import { ArrowUp, ArrowDown, ArrowUpDown, BarChart3, Type, Hash, Calendar, X } from 'lucide-react'
+import { aggregationLabels, type AggregationType } from '@/types/pivot'
 
 function formatValue(v: number | string): string {
   if (v == null) return '—'
@@ -332,16 +333,9 @@ export const PivotTable = observer(function PivotTable() {
                     {(() => {
                       const aggs = pivotStore.values.map((v: any) => v.aggregation)
                       const uniqueAggs = [...new Set(aggs)] as string[]
-                      const labels: Record<string, string> = {
-                        sum: 'Сумма', avg: 'Среднее', count: 'Количество',
-                        min: 'Минимум', max: 'Максимум', original: 'Значение',
-                        sum_pct_total: '% от общего', sum_pct_row: '% по строке',
-                        sum_pct_col: '% по столбцу', running_sum: 'Нарастающий итог',
-                        count_pct_total: '% количества',
-                      }
                       const aggLabel = uniqueAggs.length === 1
-                        ? labels[uniqueAggs[0]] ?? uniqueAggs[0]
-                        : uniqueAggs.map(a => labels[a] ?? a).join(', ')
+                        ? (aggregationLabels[uniqueAggs[0] as AggregationType] ?? uniqueAggs[0])
+                        : uniqueAggs.map(a => aggregationLabels[a as AggregationType] ?? a).join(', ')
                       return `Итого (${aggLabel})`
                     })()}
                   </td>
