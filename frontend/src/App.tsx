@@ -6,17 +6,14 @@ import { AppLayout } from '@/components/Layout/AppLayout'
 import { AppHeader } from '@/components/Layout/AppHeader'
 import { StatusBar } from '@/components/Layout/StatusBar'
 import { FieldPanel } from '@/components/FieldPanel/FieldPanel'
-import { PivotBuilder } from '@/components/PivotBuilder/PivotBuilder'
-import { PivotTable } from '@/components/PivotTable/PivotTable'
-import { ChartView } from '@/components/PivotTable/ChartView'
-import { ViewToggle, type ViewMode } from '@/components/PivotTable/ViewToggle'
+import { CenterPanel } from '@/components/Layout/CenterPanel'
+import { ErrorBoundary } from '@/components/ErrorBoundary'
 import { ChatPanel } from '@/components/Chat/ChatPanel'
 // WelcomeScreen removed — upload is now part of DashboardsPage
 import { AuthPage } from '@/components/Auth/AuthPage'
 import { DashboardsPage } from '@/components/Dashboards/DashboardsPage'
 import { DatabaseTreePanel } from '@/components/Database/DatabaseTreePanel'
-import { Hash, Type, Calendar, ToggleLeft, Bot, Download, FileSpreadsheet, Link2, ChevronDown, BarChart3, PanelLeft, PanelTop } from 'lucide-react'
-import { cn } from '@/lib/utils'
+import { Hash, Type, Calendar, ToggleLeft, BarChart3 } from 'lucide-react'
 import { observer } from 'mobx-react-lite'
 import type { PivotZone } from '@/types/pivot'
 
@@ -26,168 +23,6 @@ const typeIcons: Record<string, typeof Type> = {
   date: Calendar,
   boolean: ToggleLeft,
 }
-
-function ExportMenu() {
-  const { resultStore, pivotStore, datasetStore } = useStore()
-  const [open, setOpen] = useState(false)
-  const [copied, setCopied] = useState(false)
-
-  const buildShareUrl = () => {
-    const id = datasetStore.currentDatasetId
-    if (!id || !pivotStore.isValid) return window.location.href
-    try {
-      const config = btoa(encodeURIComponent(JSON.stringify(pivotStore.configSnapshot)))
-      return `${window.location.origin}/dashboard/${id}?config=${config}`
-    } catch {
-      return window.location.href
-    }
-  }
-
-  const items = [
-    {
-      label: 'CSV', icon: Download, onClick: async () => {
-        if (resultStore.data) {
-          const { exportCSV } = await import('@/services/api/exportApi')
-          await exportCSV(resultStore.data)
-        }
-        setOpen(false)
-      }
-    },
-    {
-      label: 'Excel', icon: FileSpreadsheet, onClick: async () => {
-        if (resultStore.data) {
-          const { exportExcel } = await import('@/services/api/exportApi')
-          await exportExcel(resultStore.data)
-        }
-        setOpen(false)
-      }
-    },
-    {
-      label: copied ? 'Скопировано!' : 'Share link',
-      icon: Link2,
-      onClick: () => {
-        navigator.clipboard.writeText(buildShareUrl())
-        setCopied(true)
-        setTimeout(() => { setCopied(false); setOpen(false) }, 1200)
-      },
-    },
-  ]
-
-  return (
-    <div className="relative">
-      <button
-        onClick={() => setOpen(!open)}
-        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[14px] text-[#475569] hover:bg-[#f8fafc] border border-[#e2e8f0] hover:border-[#94a3b8] transition-all"
-      >
-        <Download className="h-4 w-4" />
-        Export
-        <ChevronDown className="h-3.5 w-3.5 ml-0.5 opacity-50" />
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-full mt-1 z-40 bg-white rounded-xl border border-[#e2e8f0] shadow-xl py-1.5 min-w-[180px] animate-fade-in-up">
-            {items.map(({ label, icon: Icon, onClick }) => (
-              <button
-                key={label}
-                onClick={onClick}
-                className="w-full flex items-center gap-2.5 px-4 py-2.5 text-[15px] text-[#334155] hover:bg-[#f8fafc] transition-colors"
-              >
-                <Icon className="h-[18px] w-[18px] text-[#64748b]" />
-                {label}
-              </button>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
-  )
-}
-
-const CenterPanel = observer(function CenterPanel({ chatOpen, onToggleChat, fieldsOpen, onToggleFields }: { chatOpen: boolean; onToggleChat: () => void; fieldsOpen: boolean; onToggleFields: () => void }) {
-  const { pivotStore, resultStore, chatStore } = useStore()
-  const { viewMode, data } = resultStore
-  const [builderOpen, setBuilderOpen] = useState(true)
-
-  const showChart = viewMode !== 'table' && pivotStore.isValid && data && data.rows.length > 0
-
-  return (
-    <div className="flex flex-col h-full">
-      {builderOpen && <PivotBuilder />}
-      <div className="flex items-center justify-between px-4 pt-3 pb-2">
-        <div className="flex items-center gap-3">
-          {pivotStore.isValid && (
-            <span className="text-[14px] text-[#64748b]">
-              {data ? `${data.rows.length} строк` : ''}
-            </span>
-          )}
-          {pivotStore.isValid && data && data.rows.length > 0 && (
-            <button
-              onClick={() => chatStore.requestExplain()}
-              disabled={chatStore.loading}
-              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[14px] text-[#0f766e] hover:bg-[#f0fdfa] border border-[#ccfbf1] hover:border-[#5eead4] transition-all disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <Bot className="h-4 w-4" />
-              Explain
-            </button>
-          )}
-        </div>
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={() => setBuilderOpen(v => !v)}
-            className={cn(
-              "flex items-center justify-center h-9 w-9 rounded-lg border transition-all",
-              builderOpen
-                ? "bg-[#f0fdfa] border-[#0d9488] text-[#0d9488]"
-                : "text-[#475569] hover:bg-[#f8fafc] border-[#e2e8f0] hover:border-[#94a3b8]"
-            )}
-            title={builderOpen ? 'Скрыть конструктор' : 'Показать конструктор'}
-          >
-            <PanelTop className="h-4 w-4" />
-          </button>
-          <button
-            onClick={onToggleFields}
-            className={cn(
-              "flex items-center justify-center h-9 w-9 rounded-lg border transition-all",
-              fieldsOpen
-                ? "bg-[#f0fdfa] border-[#0d9488] text-[#0d9488]"
-                : "text-[#475569] hover:bg-[#f8fafc] border-[#e2e8f0] hover:border-[#94a3b8]"
-            )}
-            title={fieldsOpen ? 'Скрыть поля' : 'Показать поля'}
-          >
-            <PanelLeft className="h-4 w-4" />
-          </button>
-          <button
-            onClick={onToggleChat}
-            className={cn(
-              "flex items-center justify-center h-9 w-9 rounded-lg border transition-all",
-              chatOpen
-                ? "bg-[#f0fdfa] border-[#0d9488] text-[#0d9488]"
-                : "text-[#475569] hover:bg-[#f8fafc] border-[#e2e8f0] hover:border-[#94a3b8]"
-            )}
-            title={chatOpen ? 'Скрыть AI чат' : 'Показать AI чат'}
-          >
-            <Bot className="h-4 w-4" />
-          </button>
-          {pivotStore.isValid && (
-            <>
-              <ExportMenu />
-              <ViewToggle
-                value={viewMode as ViewMode}
-                onChange={(mode) => resultStore.setViewMode(mode)}
-              />
-            </>
-          )}
-        </div>
-      </div>
-      {showChart ? (
-        <ChartView data={data!} mode={viewMode as ViewMode} />
-      ) : (
-        <PivotTable />
-      )}
-    </div>
-  )
-})
 
 const DashboardPage = observer(function DashboardPage() {
   const { pivotStore, resultStore, datasetStore, chatStore } = useStore()
@@ -451,8 +286,8 @@ export default function App() {
           <Route path="/login" element={<AuthPage />} />
           <Route path="/" element={<Navigate to="/dashboards" replace />} />
           <Route path="/dashboards" element={<ProtectedRoute><DashboardsLayout /></ProtectedRoute>} />
-          <Route path="/dashboard/ext/:connectionId" element={<ProtectedRoute><ExternalDashboardPage /></ProtectedRoute>} />
-          <Route path="/dashboard/:datasetId" element={<ProtectedRoute><DashboardPage /></ProtectedRoute>} />
+          <Route path="/dashboard/ext/:connectionId" element={<ProtectedRoute><ErrorBoundary><ExternalDashboardPage /></ErrorBoundary></ProtectedRoute>} />
+          <Route path="/dashboard/:datasetId" element={<ProtectedRoute><ErrorBoundary><DashboardPage /></ErrorBoundary></ProtectedRoute>} />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </StoreProvider>
